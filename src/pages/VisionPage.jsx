@@ -211,6 +211,12 @@ export default function VisionPage({
       setLoading(false);
       return;
     }
+    if (type === "lang-en" || type === "lang-ar") {
+      const next = type === "lang-en" ? "en" : "ar";
+      try { localStorage.setItem("language", next); } catch { /* ignore */ }
+      window.location.reload();
+      return;
+    }
     if (type === "repeat") return handleRepeat();
     if (type === "back") {
       cancelSpeaking();

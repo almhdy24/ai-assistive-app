@@ -91,6 +91,14 @@ const EN_COMMANDS = {
   ],
   home: ["home", "go home", "main page", "main menu", "start"],
   back: ["back", "go back", "return"],
+  "lang-en": [
+    "english", "switch to english", "change to english",
+    "use english", "speak english", "in english",
+  ],
+  "lang-ar": [
+    "arabic", "switch to arabic", "change to arabic",
+    "use arabic", "speak arabic", "in arabic",
+  ],
 };
 
 const ARABIC_RE = /[\u0600-\u06FF]/;

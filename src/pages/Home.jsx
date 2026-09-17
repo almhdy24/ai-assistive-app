@@ -61,9 +61,8 @@ export default function Home({
   const lang = lastCommandLanguage || "ar";
   const mountedCmdId = useRef(voiceCommand?.id ?? null);
 
-  function switchLanguage() {
+  function switchLanguage(next = lang === "ar" ? "en" : "ar") {
     haptics.tap();
-    const next = lang === "ar" ? "en" : "ar";
     try { localStorage.setItem("language", next); } catch { /* ignore */ }
     window.location.reload();
   }
@@ -96,6 +95,8 @@ export default function Home({
       window.dispatchEvent(new CustomEvent("ai-assistive:stop-speak"));
       return;
     }
+    if (type === "lang-en") return switchLanguage("en");
+    if (type === "lang-ar") return switchLanguage("ar");
     if (type === "back" || type === "home") return;
 
     const route = ROUTE_BY_COMMAND[type];
