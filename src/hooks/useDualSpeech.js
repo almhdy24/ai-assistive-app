@@ -17,6 +17,13 @@ export const speechSupported = Boolean(Ctor);
 export const synthesisSupported =
   typeof window !== "undefined" && "speechSynthesis" in window;
 
+// On Android Chrome, assigning utt.voice makes the engine simultaneously play
+// the requested voice AND a fallback while the voice loads — causing distorted
+// "screaming" output. Setting only utt.lang lets the OS route to the correct
+// TTS engine cleanly.
+const IS_ANDROID =
+  typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
+
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
 const ALL_LANGS = ["ar-SA", "en-US"];
 
@@ -300,25 +307,30 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     const gen = ++playingGenRef.current;
 
-    // Re-pick the voice fresh every utterance. Cached SpeechSynthesisVoice
-    // objects go stale on Android Chrome (engine restart, audio focus change)
-    // and cause the engine to fall back to a distorted/loud default while
-    // simultaneously trying to load the real voice — resulting in "screaming".
-    const allVoices = window.speechSynthesis.getVoices();
-    const cached = voicesRef.current[next.language];
-    const voice =
-      cached && allVoices.some((v) => v.name === cached.name)
-        ? cached
-        : pickBestVoice(next.language);
-    if (voice) voicesRef.current[next.language] = voice;
+    // On Android: never assign utt.voice — let utt.lang route to the OS TTS.
+    // On other platforms: re-validate the cached voice against the live list
+    // so stale objects don't cause a double-play fallback.
+    const voice = IS_ANDROID
+      ? null
+      : (() => {
+          const allVoices = window.speechSynthesis.getVoices();
+          const cached = voicesRef.current[next.language];
+          const v =
+            cached && allVoices.some((v) => v.name === cached.name)
+              ? cached
+              : pickBestVoice(next.language);
+          if (v) voicesRef.current[next.language] = v;
+          return v;
+        })();
 
     const { rate, pitch, volume } = getSpeakParams(next.language, voice);
 
     const utt = new SpeechSynthesisUtterance(next.text);
     if (voice) utt.voice = voice;
     utt.lang = next.language === "ar" ? "ar-SA" : "en-US";
+    // Android TTS engines are sensitive to non-default pitch — force 1.0
     utt.rate = rate;
-    utt.pitch = pitch;
+    utt.pitch = IS_ANDROID ? 1.0 : pitch;
     utt.volume = volume;
 
     // Watchdog instead of pause/resume keep-alive.
@@ -438,10 +450,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       );
       queueRef.current.sort((a, b) => a.priority - b.priority);
 
-      // Give Android's audio session time to release after cancel() before
-      // starting the next utterance — skipping this causes distorted playback
+      // Give the audio session time to release after cancel() before starting
+      // the next utterance — Android needs more time than desktop browsers
       if (needsCancelDelay) {
-        setTimeout(playNext, 80);
+        setTimeout(playNext, IS_ANDROID ? 160 : 80);
       } else {
         playNext();
       }
