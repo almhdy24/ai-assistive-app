@@ -349,10 +349,19 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     utt.pitch = 1;
     utt.volume = 1;
 
+    let keepAlive = null;
+    const clearKeepAlive = () => {
+      if (keepAlive) {
+        clearInterval(keepAlive);
+        keepAlive = null;
+      }
+    };
+
     let advanced = false;
     const advance = () => {
       if (advanced) return;
       advanced = true;
+      clearKeepAlive();
       if (gen !== playingGenRef.current) return; // stale — superseded
       isPlayingRef.current = false;
 
@@ -367,6 +376,20 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
+    utt.onstart = () => {
+      if (gen !== playingGenRef.current || advanced) return;
+      clearKeepAlive();
+      keepAlive = setInterval(() => {
+        if (gen !== playingGenRef.current || advanced) {
+          clearKeepAlive();
+          return;
+        }
+        try {
+          window.speechSynthesis.pause();
+          window.speechSynthesis.resume();
+        } catch { /* ignore */ }
+      }, 10000);
+    };
     utt.onend = advance;
     utt.onerror = advance;
 
