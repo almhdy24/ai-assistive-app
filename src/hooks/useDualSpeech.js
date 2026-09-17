@@ -2,11 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { SPEAK_PRIORITY } from "../utils/a11y";
 import { primaryLanguage as detectPrimaryLang } from "../utils/languageDetect";
-import {
-  chunkForSpeech,
-  getSpeakParams,
-  pickBestVoice,
-} from "../utils/arabicTts";
+import { chunkBySentence } from "../utils/arabicTts";
 
 const Ctor =
   typeof window !== "undefined"
@@ -16,13 +12,6 @@ const Ctor =
 export const speechSupported = Boolean(Ctor);
 export const synthesisSupported =
   typeof window !== "undefined" && "speechSynthesis" in window;
-
-// On Android Chrome, assigning utt.voice makes the engine simultaneously play
-// the requested voice AND a fallback while the voice loads — causing distorted
-// "screaming" output. Setting only utt.lang lets the OS route to the correct
-// TTS engine cleanly.
-const IS_ANDROID =
-  typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
 const ALL_LANGS = ["ar-SA", "en-US"];
@@ -71,8 +60,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const isPlayingRef = useRef(false);
   const playingGenRef = useRef(0);
 
-  const voicesRef = useRef({ ar: null, en: null });
-
   const activeLangs = language ? [LANG_CODE[language]] : ALL_LANGS;
   const activeLangsRef = useRef(activeLangs);
   activeLangsRef.current = activeLangs;
@@ -119,23 +106,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       setMicPermission("denied");
       return false;
     }
-  }, []);
-
-  useEffect(() => {
-    if (!synthesisSupported) return;
-    const refresh = () => {
-      voicesRef.current.ar = pickBestVoice("ar");
-      voicesRef.current.en = pickBestVoice("en");
-    };
-    refresh();
-    window.speechSynthesis.addEventListener?.("voiceschanged", refresh);
-    // Safety net: on Android Chrome, voiceschanged can fire before the listener is
-    // added (voices already cached). Retry once to pick them up.
-    const t = setTimeout(refresh, 500);
-    return () => {
-      window.speechSynthesis.removeEventListener?.("voiceschanged", refresh);
-      clearTimeout(t);
-    };
   }, []);
 
   /* ---------------------------------------------------------------- */
@@ -367,97 +337,36 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     const gen = ++playingGenRef.current;
 
-    // On Android: never assign utt.voice — let utt.lang route to the OS TTS.
-    // On other platforms: re-validate the cached voice against the live list
-    // so stale objects don't cause a double-play fallback.
-    const voice = IS_ANDROID
-      ? null
-      : (() => {
-          const allVoices = window.speechSynthesis.getVoices();
-          const cached = voicesRef.current[next.language];
-          const v =
-            cached && allVoices.some((v) => v.name === cached.name)
-              ? cached
-              : pickBestVoice(next.language);
-          if (v) voicesRef.current[next.language] = v;
-          return v;
-        })();
-
-    const { rate, pitch, volume } = getSpeakParams(next.language, voice);
-
+    // Mirrors known-good standalone speakText: no voice assignment (let utt.lang
+    // route to OS TTS), fixed rate/pitch/volume, cancel-before-speak, and a
+    // 10s pause/resume keep-alive to prevent Android from silently cutting long
+    // utterances at its 15s TTS budget.
     const utt = new SpeechSynthesisUtterance(next.text);
-    if (voice) utt.voice = voice;
     utt.lang = next.language === "ar" ? "ar-SA" : "en-US";
-    // Android TTS engines are sensitive to non-default pitch — force 1.0
-    utt.rate = rate;
-    utt.pitch = IS_ANDROID ? 1.0 : pitch;
-    utt.volume = volume;
+    utt.rate = next.language === "ar" ? 0.88 : 0.9;
+    utt.pitch = 1;
+    utt.volume = 1;
 
-    // Inter-chunk gap: Android audio-session release is slower on some vendor
-    // ROMs (e.g. Huawei EMUI). If the next utterance starts before the previous
-    // one's session has released, they overlap and sound distorted ("screaming").
-    const nextGap = IS_ANDROID
-      ? (next.language === "ar" ? 260 : 220)
-      : (next.language === "ar" ? 100 : 80);
+    let keepAlive = null;
+    const clearKeepAlive = () => {
+      if (keepAlive) {
+        clearInterval(keepAlive);
+        keepAlive = null;
+      }
+    };
 
-    // Guard so advance() can only run once per utterance. Previously, if the
-    // engine misreported `!speaking` briefly between chunks AND then fired the
-    // real onend, both paths would schedule playNext() → two overlapping
-    // utterances on Huawei devices.
     let advanced = false;
     const advance = () => {
       if (advanced) return;
       advanced = true;
-      if (gen !== playingGenRef.current) return; // stale — superseded by stop/cancel
-      if (watchdog) clearInterval(watchdog);
+      clearKeepAlive();
+      if (gen !== playingGenRef.current) return; // stale — superseded
       isPlayingRef.current = false;
 
       if (queueRef.current.length > 0) {
-        // Keep speaking=true; restart recognition only after the last chunk
-        setTimeout(playNext, nextGap);
+        playNext();
       } else {
         setSpeaking(false);
-        pausedRef.current = false;
-        startAllRecognition();
-      }
-    };
-
-    // Minimal watchdog: ONLY the hard 13-second cap (Android's 15s TTS budget
-    // silently cuts audio; we cancel before that so onerror("canceled") can
-    // continue the queue). We do NOT force-advance on !speaking and do NOT
-    // call ss.resume() — those paths cause overlapping utterances on Huawei
-    // EMUI, since the engine transiently flips paused/speaking between
-    // phonemes, and forcing resume/advance schedules a duplicate playback.
-    let watchdog = null;
-    const startTime = Date.now();
-    watchdog = setInterval(() => {
-      if (gen !== playingGenRef.current) {
-        clearInterval(watchdog);
-        return;
-      }
-      if (Date.now() - startTime > 13000) {
-        clearInterval(watchdog);
-        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-      }
-    }, 500);
-
-    utt.onend = () => advance();
-    utt.onerror = () => {
-      if (gen !== playingGenRef.current) return; // stale
-      if (watchdog) clearInterval(watchdog);
-      // Treat every error path through advance() so the idempotent guard applies.
-      // interrupted/canceled: keep queue draining if we still have chunks.
-      // any other error: skip the chunk and continue with the rest.
-      if (advanced) return;
-      advanced = true;
-      isPlayingRef.current = false;
-
-      if (queueRef.current.length > 0) {
-        setTimeout(playNext, nextGap);
-      } else {
-        setSpeaking(false);
-        // stopSpeaking (cancel-speak) leaves pausedRef false → restart recognition
-        // stopAll (stop-speak) leaves pausedRef true → stay paused
         if (!pausedRef.current) {
           pausedRef.current = false;
           startAllRecognition();
@@ -465,9 +374,22 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
-    // Match known-good standalone: every speak() is preceded by a cancel(),
-    // including between chunks of the same response. Huawei EMUI needs the
-    // audio session reset before each utterance.
+    utt.onstart = () => {
+      clearKeepAlive();
+      keepAlive = setInterval(() => {
+        if (gen !== playingGenRef.current) {
+          clearKeepAlive();
+          return;
+        }
+        try {
+          window.speechSynthesis.pause();
+          window.speechSynthesis.resume();
+        } catch { /* ignore */ }
+      }, 10000);
+    };
+    utt.onend = advance;
+    utt.onerror = advance;
+
     try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     window.speechSynthesis.speak(utt);
   }, [startAllRecognition, stopAllRecognition]);
@@ -478,37 +400,21 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
       const lang = langOverride || (language ?? detectPrimaryLang(text, "ar"));
 
-      let needsCancelDelay = false;
-
       if (priority === SPEAK_PRIORITY.CRITICAL && isPlayingRef.current) {
-        // Invalidate in-flight watchdog/callbacks before canceling
+        // Invalidate in-flight callbacks before canceling
         playingGenRef.current++;
-        window.speechSynthesis.cancel();
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
         isPlayingRef.current = false;
         queueRef.current = [];
-        needsCancelDelay = true;
-      } else if (!isPlayingRef.current && queueRef.current.length === 0) {
-        // Match known-good standalone code: unconditional cancel() before every
-        // speak(). The idle-check was masking latent Huawei TTS-engine state
-        // that is not visible from the JS event stream. Keep no cancel-delay —
-        // the old code runs cancel + speak synchronously and works on the same
-        // Huawei device.
-        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
       }
 
-      const chunks = chunkForSpeech(text, lang);
+      const chunks = chunkBySentence(text, lang);
       chunks.forEach((chunk) =>
         queueRef.current.push({ text: chunk, priority, language: lang })
       );
       queueRef.current.sort((a, b) => a.priority - b.priority);
 
-      // Give the audio session time to release after cancel() before starting
-      // the next utterance — Android vendor ROMs need more time than desktop
-      if (needsCancelDelay) {
-        setTimeout(playNext, IS_ANDROID ? 260 : 80);
-      } else {
-        playNext();
-      }
+      playNext();
     },
     [language, playNext]
   );

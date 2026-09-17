@@ -149,6 +149,21 @@ function cleanText(text) {
 }
 
 /**
+ * Sentence-only split — matches the known-good standalone code that works on
+ * Huawei EMUI. Combining sentences into breath-sized chunks (chunkForSpeech)
+ * causes the audio session to be reused too quickly on Huawei, producing
+ * "screaming" distortion. One utterance per sentence, no combining.
+ */
+export function chunkBySentence(text, language = "ar") {
+  const clean = cleanText(normaliseNumbers(text, language));
+  if (!clean) return [];
+  return clean
+    .split(/(?<=[.!?؟\n])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
  * Split into breath-sized chunks.
  * Arabic: 110 chars max — shorter chunks = better natural pausing + stays under Android 13s cap.
  * English: 130 chars max — 160 was too close to the 13s Android TTS budget limit.
