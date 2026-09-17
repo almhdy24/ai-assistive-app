@@ -7,6 +7,7 @@ import {
   getSpeakParams,
   pickBestVoice,
 } from "../utils/arabicTts";
+import { pushTtsEvent } from "../utils/ttsDiagnostics";
 
 const Ctor =
   typeof window !== "undefined"
@@ -24,13 +25,15 @@ export const synthesisSupported =
 const IS_ANDROID =
   typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 
-// Set localStorage["tts-debug"] = "1" to log the exact voice/rate/pitch/volume
-// and utterance lifecycle. Useful for diagnosing device-specific TTS oddities.
-const ttsDebug = (...args) => {
+// Push every debug event into the in-app ring buffer so the TtsDiagnosticsPanel
+// can display it on devices without DevTools. The localStorage "tts-debug" flag
+// still gates console output for developers with a debugger attached.
+const ttsDebug = (name, data) => {
+  pushTtsEvent(name, data);
   try {
     if (typeof localStorage !== "undefined" && localStorage.getItem("tts-debug") === "1") {
       // eslint-disable-next-line no-console
-      console.log("[tts]", ...args);
+      console.log("[tts]", name, data);
     }
   } catch { /* ignore */ }
 };

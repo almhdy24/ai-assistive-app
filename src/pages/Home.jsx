@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
 import InstallPrompt from "../components/InstallPrompt";
+import TtsDiagnosticsPanel from "../components/TtsDiagnosticsPanel";
 import { useHaptics } from "../hooks/useHaptics";
 import { announce, SPEAK_PRIORITY } from "../utils/a11y";
 import { pick } from "../i18n/translations";
@@ -70,6 +71,7 @@ export default function Home({
   }
 
   const [lastHeard, setLastHeard] = useState(null);
+  const [showDiag, setShowDiag] = useState(false);
   const heardTimerRef = useRef(null);
   const notUnderstoodCooldownRef = useRef(0);
 
@@ -245,7 +247,21 @@ export default function Home({
         </nav>
 
         <InstallPrompt t={t} />
+
+        <button
+          type="button"
+          className="home-diag-trigger"
+          onClick={() => {
+            haptics.tap();
+            setShowDiag(true);
+          }}
+          aria-label="Open TTS diagnostics"
+        >
+          TTS diagnostics
+        </button>
       </main>
+
+      <TtsDiagnosticsPanel open={showDiag} onClose={() => setShowDiag(false)} />
     </div>
   );
 }
