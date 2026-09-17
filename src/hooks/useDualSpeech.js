@@ -26,16 +26,9 @@ const IS_ANDROID =
   typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 
 // Push every debug event into the in-app ring buffer so the TtsDiagnosticsPanel
-// can display it on devices without DevTools. The localStorage "tts-debug" flag
-// still gates console output for developers with a debugger attached.
+// can display it on devices without DevTools.
 const ttsDebug = (name, data) => {
   pushTtsEvent(name, data);
-  try {
-    if (typeof localStorage !== "undefined" && localStorage.getItem("tts-debug") === "1") {
-      // eslint-disable-next-line no-console
-      console.log("[tts]", name, data);
-    }
-  } catch { /* ignore */ }
 };
 
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
@@ -605,20 +598,13 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         ttsDebug("queue-cleared", { source: "speak-critical" });
         needsCancelDelay = true;
       } else if (!isPlayingRef.current && queueRef.current.length === 0) {
-        // Only cancel if the engine has orphaned state to flush. Calling cancel()
-        // unconditionally before every fresh speak() was leaving Huawei's audio
-        // session half-torn-down, so the new utterance played over the tail of
-        // the previous one ("screaming"). Query the engine and only intervene
-        // when there is a demonstrated reason.
-        const ss = window.speechSynthesis;
-        if (ss.speaking || ss.pending) {
-          ttsDebug("speak-orphaned-detected", {
-            ssSpeaking: ss.speaking, ssPending: ss.pending, ssPaused: ss.paused,
-            ...snapshot(),
-          });
-          ssCancel("speak-orphaned");
-          needsCancelDelay = true;
-        }
+        // Match known-good standalone code: unconditional cancel() before every
+        // speak(). The idle-check was masking latent Huawei TTS-engine state
+        // that is not visible from the JS event stream (confirmed by clean
+        // lifecycle traces during audible screaming). Keep no cancel-delay —
+        // the old code runs cancel + speak synchronously and works on the same
+        // Huawei device.
+        ssCancel("speak-precancel");
       }
 
       const chunks = chunkForSpeech(text, lang);
