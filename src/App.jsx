@@ -37,6 +37,17 @@ export default function App() {
   const [voiceCommand, setVoiceCommand] = useState(null);
   const [languageIntent, setLanguageIntent] = useState(null);
 
+  const handleSelectLanguage = useCallback((lang) => {
+    try {
+      localStorage.setItem("language", lang);
+    } catch {
+      /* quota / private mode */
+    }
+    setPrimaryLanguage(lang);
+    setLanguageIntent(null);
+    setVoiceCommand(null);
+  }, []);
+
   const handleCommand = useCallback(
     (transcript, detectedLanguage) => {
       if (!primaryLanguage) {
@@ -141,17 +152,6 @@ export default function App() {
       window.removeEventListener("ai-assistive:set-language", onSetLang);
     };
   }, [stopAll, handleSelectLanguage]);
-
-  const handleSelectLanguage = useCallback((lang) => {
-    try {
-      localStorage.setItem("language", lang);
-    } catch {
-      /* quota / private mode */
-    }
-    setPrimaryLanguage(lang);
-    setLanguageIntent(null);
-    setVoiceCommand(null);
-  }, []);
 
   const isRtl = primaryLanguage !== "en";
   const htmlLang = primaryLanguage || "ar";
