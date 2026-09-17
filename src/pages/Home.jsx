@@ -65,9 +65,9 @@ export default function Home({
   const heardTimerRef = useRef(null);
 
   useEffect(() => {
-    announce(pick(t.homeWelcome, "ar"), {
+    announce(pick(t.homeWelcome, lang), {
       priority: SPEAK_PRIORITY.LOW,
-      language: "ar",
+      language: lang,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
