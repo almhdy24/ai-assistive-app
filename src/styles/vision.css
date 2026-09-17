@@ -56,8 +56,8 @@
 }
 
 .vision__btn {
-  width: 46px;
-  height: 46px;
+  width: 52px;
+  height: 52px;
 
   display: flex;
   align-items: center;
@@ -73,6 +73,8 @@
   font-weight: 700;
 
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -252,8 +254,8 @@
 
 .vision__shutter {
   position: relative;
-  width: 84px;
-  height: 84px;
+  width: 92px;
+  height: 92px;
 
   display: flex;
   align-items: center;
@@ -263,6 +265,8 @@
   border: 0;
 
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   transition: transform 0.15s ease;
 }
 
@@ -338,6 +342,9 @@
   line-height: 1.7;
 
   white-space: pre-wrap;
+  /* Re-enable selection inside the result text */
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .sheet__actions {
@@ -347,7 +354,7 @@
 
 .sheet__btn {
   flex: 1;
-  min-height: 52px;
+  min-height: 56px;
 
   display: flex;
   align-items: center;
@@ -365,6 +372,8 @@
   font-weight: 600;
 
   cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   transition: background-color 0.15s ease;
 }
 

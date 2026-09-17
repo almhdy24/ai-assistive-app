@@ -83,6 +83,8 @@ export function pickBestVoice(language) {
     (v.lang || "").toLowerCase().startsWith(target)
   );
 
+  // No matching language voice — return null so the browser uses its default
+  // (better than silence; Android system TTS will still attempt to speak)
   if (!candidates.length) return null;
 
   return candidates
@@ -148,11 +150,11 @@ function cleanText(text) {
 
 /**
  * Split into breath-sized chunks.
- * Arabic: 120 chars max — shorter chunks sound more natural with Arabic TTS.
- * English: 160 chars max.
+ * Arabic: 110 chars max — shorter chunks = better natural pausing + stays under Android 13s cap.
+ * English: 130 chars max — 160 was too close to the 13s Android TTS budget limit.
  */
 export function chunkForSpeech(text, language = "ar", maxLen) {
-  const limit = maxLen ?? (language === "ar" ? 120 : 160);
+  const limit = maxLen ?? (language === "ar" ? 110 : 130);
   const clean = cleanText(normaliseNumbers(text, language));
   if (!clean) return [];
 

@@ -53,10 +53,16 @@ body,
 
 html {
   background: var(--bg);
+  /* Prevent pull-to-refresh and overscroll glow from interrupting the PWA */
+  overscroll-behavior: none;
 }
 
 body {
   min-height: 100vh;
+  overscroll-behavior: none;
+  /* Disable text selection across the app (blind-assist UI, not a text editor) */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 button,
@@ -68,6 +74,8 @@ select {
 
 button {
   -webkit-tap-highlight-color: transparent;
+  /* Removes the 300ms tap delay on Android Chrome and prevents double-tap zoom */
+  touch-action: manipulation;
 }
 
 a {

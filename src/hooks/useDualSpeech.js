@@ -17,9 +17,7 @@ export const speechSupported = Boolean(Ctor);
 export const synthesisSupported =
   typeof window !== "undefined" && "speechSynthesis" in window;
 
-// Full lang codes for each short code
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
-// Fallback: both when no language selected (detection phase)
 const ALL_LANGS = ["ar-SA", "en-US"];
 
 const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F]/;
@@ -42,7 +40,7 @@ function scriptOf(text) {
  * @param {object} opts
  * @param {boolean}  opts.enabled
  * @param {function} opts.onCommand   - called with (transcript, language)
- * @param {string|null} opts.language - "ar" | "en" | null (null = detection mode, runs both)
+ * @param {string|null} opts.language - "ar" | "en" | null (null = detection mode)
  */
 export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const [listening, setListening] = useState(false);
@@ -54,37 +52,40 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const pausedRef = useRef(false);
   const onCommandRef = useRef(onCommand);
 
+  // Factory stored in ref so startAllRecognition/scheduleRestart can always
+  // create fresh instances (Android Chrome can't reliably restart a stopped recognizer)
+  const makeRecognizerRef = useRef(null);
+
   const queueRef = useRef([]);
   const isPlayingRef = useRef(false);
   const playingGenRef = useRef(0);
 
   const voicesRef = useRef({ ar: null, en: null });
 
-  // Active recognizer lang codes — one when language is set, both when detecting
   const activeLangs = language ? [LANG_CODE[language]] : ALL_LANGS;
 
   useEffect(() => {
     onCommandRef.current = onCommand;
   }, [onCommand]);
 
-  // Keep lastCommandLanguage in sync when language prop changes
   useEffect(() => {
     if (language) setLastCommandLanguage(language);
   }, [language]);
 
-  // Warm voice cache
   useEffect(() => {
     if (!synthesisSupported) return;
-
     const refresh = () => {
       voicesRef.current.ar = pickBestVoice("ar");
       voicesRef.current.en = pickBestVoice("en");
     };
-
     refresh();
     window.speechSynthesis.addEventListener?.("voiceschanged", refresh);
+    // Safety net: on Android Chrome, voiceschanged can fire before the listener is
+    // added (voices already cached). Retry once to pick them up.
+    const t = setTimeout(refresh, 500);
     return () => {
       window.speechSynthesis.removeEventListener?.("voiceschanged", refresh);
+      clearTimeout(t);
     };
   }, []);
 
@@ -92,42 +93,44 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   /* Recognition                                                      */
   /* ---------------------------------------------------------------- */
 
-  const scheduleRestart = useCallback(
-    (lang) => {
-      clearTimeout(restartTimersRef.current[lang]);
-      restartTimersRef.current[lang] = setTimeout(() => {
-        if (pausedRef.current) return;
-        try {
-          recognizersRef.current[lang]?.start();
-        } catch {
-          /* already running */
-        }
-      }, 450);
-    },
-    []
-  );
+  const scheduleRestart = useCallback((lang) => {
+    clearTimeout(restartTimersRef.current[lang]);
+    restartTimersRef.current[lang] = setTimeout(() => {
+      if (pausedRef.current) return;
+      const make = makeRecognizerRef.current;
+      if (make) {
+        try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
+        const rec = make(lang);
+        recognizersRef.current[lang] = rec;
+        try { rec.start(); } catch { /* ignore */ }
+      } else {
+        try { recognizersRef.current[lang]?.start(); } catch { /* ignore */ }
+      }
+    }, 450);
+  }, []);
 
   const stopAllRecognition = useCallback(() => {
     pausedRef.current = true;
     ALL_LANGS.forEach((lang) => {
       clearTimeout(restartTimersRef.current[lang]);
-      try {
-        recognizersRef.current[lang]?.stop();
-      } catch {
-        /* ignore */
-      }
+      try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
     });
     setListening(false);
   }, []);
 
   const startAllRecognition = useCallback(() => {
     pausedRef.current = false;
-    // Only start the active language(s)
     activeLangs.forEach((lang) => {
-      try {
-        recognizersRef.current[lang]?.start();
-      } catch {
-        /* ignore */
+      const make = makeRecognizerRef.current;
+      if (make) {
+        // Always create a fresh instance — Android Chrome can't reliably restart
+        // a SpeechRecognition object that was previously .stop()ed
+        try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
+        const rec = make(lang);
+        recognizersRef.current[lang] = rec;
+        try { rec.start(); } catch { /* ignore */ }
+      } else {
+        try { recognizersRef.current[lang]?.start(); } catch { /* ignore */ }
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -147,24 +150,20 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     let detected;
 
     if (language) {
-      // Single-language mode: just use the result directly
       const entry = pending[LANG_CODE[language]];
       if (!entry?.transcript) return;
       transcript = entry.transcript;
       detected = language;
     } else {
-      // Dual-language detection mode: score candidates and pick winner
       const scored = candidates.map(([lang, { transcript: t, confidence }]) => {
         const script = scriptOf(t);
         const scriptMatches =
           (lang.startsWith("ar") && script === "ar") ||
           (lang.startsWith("en") && script === "en");
-
         const scriptRatio =
           script === "ar"
             ? (t.match(ARABIC_RE) || []).length / t.length
             : (t.match(LATIN_RE) || []).length / t.length;
-
         return {
           lang: lang.startsWith("ar") ? "ar" : "en",
           transcript: t,
@@ -185,11 +184,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((l) => {
       clearTimeout(restartTimersRef.current[l]);
-      try {
-        recognizersRef.current[l]?.stop();
-      } catch {
-        /* ignore */
-      }
+      try { recognizersRef.current[l]?.stop(); } catch { /* ignore */ }
     });
     setListening(false);
 
@@ -212,9 +207,12 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
   // Rebuild recognizers whenever enabled or language changes
   useEffect(() => {
-    if (!speechSupported || !enabled) return;
+    if (!speechSupported || !enabled) {
+      makeRecognizerRef.current = null;
+      return;
+    }
 
-    activeLangs.forEach((lang) => {
+    const makeRecognizer = (lang) => {
       const rec = new Ctor();
       rec.continuous = true;
       rec.interimResults = false;
@@ -224,11 +222,9 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       rec.onstart = () => {
         if (!pausedRef.current) setListening(true);
       };
-
       rec.onend = () => {
         if (!pausedRef.current) scheduleRestart(lang);
       };
-
       rec.onerror = (event) => {
         if (
           event.error === "not-allowed" ||
@@ -239,7 +235,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         if (event.error === "no-speech") return;
         scheduleRestart(lang);
       };
-
       rec.onresult = (event) => {
         const last = event.results[event.results.length - 1];
         if (!last.isFinal) return;
@@ -249,7 +244,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
           const t = alt.transcript?.trim();
           if (!t) continue;
 
-          // In dual mode, reject mismatched scripts
           if (!language) {
             const script = scriptOf(t);
             const expected = lang.startsWith("ar") ? "ar" : "en";
@@ -266,25 +260,24 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         scheduleFlush();
       };
 
-      recognizersRef.current[lang] = rec;
+      return rec;
+    };
 
-      try {
-        rec.start();
-      } catch {
-        /* ignore */
-      }
+    makeRecognizerRef.current = makeRecognizer;
+
+    activeLangs.forEach((lang) => {
+      const rec = makeRecognizer(lang);
+      recognizersRef.current[lang] = rec;
+      try { rec.start(); } catch { /* ignore */ }
     });
 
     return () => {
+      makeRecognizerRef.current = null;
       pausedRef.current = true;
       clearTimeout(flushTimerRef.current);
       ALL_LANGS.forEach((lang) => {
         clearTimeout(restartTimersRef.current[lang]);
-        try {
-          recognizersRef.current[lang]?.stop();
-        } catch {
-          /* ignore */
-        }
+        try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
       });
       recognizersRef.current = {};
     };
@@ -317,17 +310,19 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     utt.pitch = pitch;
     utt.volume = volume;
 
-    // Chrome/Android stops TTS silently after ~15 s — nudge it every 10 s
-    const keepAlive = setInterval(() => {
-      if (window.speechSynthesis.speaking) {
-        window.speechSynthesis.pause();
-        window.speechSynthesis.resume();
-      }
-    }, 10000);
+    // Watchdog instead of pause/resume keep-alive.
+    // pause/resume was breaking onend on Android Chrome, leaving isPlayingRef=true
+    // forever and making the app appear frozen. The watchdog instead:
+    //   1. Detects silent TTS death (speaking goes false without onend firing)
+    //   2. Forces advance past any chunk stuck >13s (Android 15s TTS budget limit)
+    //   3. Auto-resumes if browser paused TTS due to audio focus change
+    let watchdog = null;
+    let idleCount = 0;
+    const startTime = Date.now();
 
     const advance = () => {
-      if (gen !== playingGenRef.current) return; // stale — superseded by stopSpeaking/stopAll
-      clearInterval(keepAlive);
+      if (gen !== playingGenRef.current) return; // stale — superseded by stop/cancel
+      if (watchdog) clearInterval(watchdog);
       isPlayingRef.current = false;
 
       if (queueRef.current.length > 0) {
@@ -340,20 +335,52 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
+    watchdog = setInterval(() => {
+      if (gen !== playingGenRef.current) {
+        clearInterval(watchdog);
+        return;
+      }
+
+      const ss = window.speechSynthesis;
+
+      // Resume if browser auto-paused (audio focus loss, interruption, etc.)
+      if (ss.paused) {
+        ss.resume();
+        idleCount = 0;
+        return;
+      }
+
+      if (!ss.speaking) {
+        // TTS ended (or died silently) without firing onend
+        if (++idleCount >= 3) { // 750ms debounce prevents false positives between chunks
+          clearInterval(watchdog);
+          advance();
+        }
+      } else {
+        idleCount = 0;
+        // Hard 13s cap: force cancel if stuck (Android 15s TTS budget)
+        // onerror("canceled") will continue the queue
+        if (Date.now() - startTime > 13000) {
+          clearInterval(watchdog);
+          ss.cancel();
+        }
+      }
+    }, 250);
+
     utt.onend = advance;
     utt.onerror = (evt) => {
       if (gen !== playingGenRef.current) return; // stale
-      clearInterval(keepAlive);
+      if (watchdog) clearInterval(watchdog);
       isPlayingRef.current = false;
 
       if (evt.error === "interrupted" || evt.error === "canceled") {
         if (queueRef.current.length > 0) {
-          // Keep-alive pause/resume side-effect with chunks still pending — continue
+          // Genuine external interruption with chunks remaining — try to continue
           setTimeout(playNext, 100);
         } else {
           setSpeaking(false);
           // stopSpeaking (cancel-speak) leaves pausedRef false → restart recognition
-          // stopAll (stop-speak) leaves pausedRef true → leave paused
+          // stopAll (stop-speak) leaves pausedRef true → stay paused
           if (!pausedRef.current) startAllRecognition();
         }
         return;
@@ -379,9 +406,15 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       const lang = langOverride || (language ?? detectPrimaryLang(text, "ar"));
 
       if (priority === SPEAK_PRIORITY.CRITICAL && isPlayingRef.current) {
+        // Invalidate in-flight watchdog/callbacks before canceling
+        playingGenRef.current++;
         window.speechSynthesis.cancel();
         isPlayingRef.current = false;
         queueRef.current = [];
+      } else if (!isPlayingRef.current && queueRef.current.length === 0) {
+        // Fresh session: cancel any stale browser utterances left from a previous
+        // session (Android Chrome can resume old utterances after foregrounding)
+        window.speechSynthesis.cancel();
       }
 
       const chunks = chunkForSpeech(text, lang);
@@ -414,11 +447,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((lang) => {
       clearTimeout(restartTimersRef.current[lang]);
-      try {
-        recognizersRef.current[lang]?.stop();
-      } catch {
-        /* ignore */
-      }
+      try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
     });
     setListening(false);
   }, []);
