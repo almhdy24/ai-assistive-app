@@ -465,6 +465,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
+    // Match known-good standalone: every speak() is preceded by a cancel(),
+    // including between chunks of the same response. Huawei EMUI needs the
+    // audio session reset before each utterance.
+    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
     window.speechSynthesis.speak(utt);
   }, [startAllRecognition, stopAllRecognition]);
 
