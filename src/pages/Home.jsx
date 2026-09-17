@@ -63,6 +63,7 @@ export default function Home({
 
   const [lastHeard, setLastHeard] = useState(null);
   const heardTimerRef = useRef(null);
+  const notUnderstoodCooldownRef = useRef(0);
 
   useEffect(() => {
     announce(pick(t.homeWelcome, lang), {
@@ -95,6 +96,18 @@ export default function Home({
       navigate(route, {
         state: { viaVoice: true, command: type, commandLanguage: lang },
       });
+    } else {
+      const now = Date.now();
+      if (
+        transcript?.trim().length > 2 &&
+        now - notUnderstoodCooldownRef.current > 4000
+      ) {
+        notUnderstoodCooldownRef.current = now;
+        announce(pick(t.notUnderstoodHome, lang), {
+          priority: SPEAK_PRIORITY.NORMAL,
+          language: lang,
+        });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceCommand]);

@@ -135,6 +135,23 @@ export const translations = {
   },
   tryAgain: { ar: "حاول مرة أخرى", en: "Try Again" },
 
+  notUnderstoodHome: {
+    ar: "لم أفهم. قل مثلاً: ماذا أمامي، اقرأ النص، صف المكان، أو ساعدني في التنقل.",
+    en: "I didn't understand. Try saying: what is in front of me, read text, describe scene, or navigate.",
+  },
+  notUnderstoodPage: {
+    ar: "لم أفهم. قل: كرر، أو الرئيسية، أو اسم خدمة أخرى.",
+    en: "I didn't understand. Say: repeat, home, or name a feature.",
+  },
+  offlineWarning: {
+    ar: "لا يوجد اتصال بالإنترنت. تحليل الصور يحتاج إنترنت.",
+    en: "No internet connection. Image analysis requires internet.",
+  },
+  onlineRestored: {
+    ar: "عاد الاتصال بالإنترنت.",
+    en: "Internet connection restored.",
+  },
+
   back: { ar: "رجوع", en: "Back" },
   repeat: { ar: "إعادة", en: "Repeat" },
   stop: { ar: "إيقاف", en: "Stop" },

@@ -13,12 +13,12 @@ import SceneDescription from "./pages/SceneDescription";
 import Navigation from "./pages/Navigation";
 import VoiceLanguageSelector from "./pages/VoiceLanguageSelector";
 
-import { translations } from "./i18n/translations";
+import { translations, pick } from "./i18n/translations";
 import { parseVoiceCommand } from "./utils/voiceCommands";
 import { matchLanguageIntent } from "./utils/languageDetect";
 import { useDualSpeech, speechSupported } from "./hooks/useDualSpeech";
 import { useWakeLock } from "./hooks/useWakeLock";
-import { focusElement, announceStatus } from "./utils/a11y";
+import { focusElement, announceStatus, SPEAK_PRIORITY } from "./utils/a11y";
 
 function readSavedLanguage() {
   try {
@@ -63,6 +63,7 @@ export default function App() {
     stopAll,
     toggleListening,
     lastCommandLanguage,
+    startRecognition,
   } = useDualSpeech({
     enabled: true,
     onCommand: handleCommand,
@@ -78,6 +79,43 @@ export default function App() {
 
   const stopSpeakingRef = useRef(stopSpeaking);
   stopSpeakingRef.current = stopSpeaking;
+
+  const startRecognitionRef = useRef(startRecognition);
+  startRecognitionRef.current = startRecognition;
+
+  /* Network status — announce offline/online changes */
+  useEffect(() => {
+    if (!primaryLanguage) return;
+    const lang = primaryLanguage;
+    const onOffline = () =>
+      speakRef.current(pick(t.offlineWarning, lang), {
+        priority: SPEAK_PRIORITY.NORMAL,
+        language: lang,
+      });
+    const onOnline = () =>
+      speakRef.current(pick(t.onlineRestored, lang), {
+        priority: SPEAK_PRIORITY.NORMAL,
+        language: lang,
+      });
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [primaryLanguage, t]);
+
+  /* Visibility — restart recognition when app returns to foreground */
+  useEffect(() => {
+    if (!primaryLanguage) return;
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        setTimeout(() => startRecognitionRef.current?.(), 300);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [primaryLanguage]);
 
   useEffect(() => {
     const onSpeak = (e) => {

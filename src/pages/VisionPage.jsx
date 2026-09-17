@@ -72,6 +72,7 @@ export default function VisionPage({
   const controllerRef = useRef(null);
   const readyAnnouncedRef = useRef(false);
   const mountedCmdId = useRef(voiceCommand?.id ?? null);
+  const notUnderstoodCooldownRef = useRef(0);
 
   const lang = lastCommandLanguage || "ar";
   const titleText = pick(title, lang);
@@ -229,6 +230,18 @@ export default function VisionPage({
         // Command targets a different page — navigate there instead of ignoring it
         cancelSpeaking();
         navigate(ROUTE_BY_TYPE[type]);
+      }
+    } else {
+      const now = Date.now();
+      if (
+        voiceCommand.transcript?.trim().length > 2 &&
+        now - notUnderstoodCooldownRef.current > 4000
+      ) {
+        notUnderstoodCooldownRef.current = now;
+        announce(pick(t.notUnderstoodPage, cmdLanguage), {
+          priority: SPEAK_PRIORITY.NORMAL,
+          language: cmdLanguage,
+        });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
