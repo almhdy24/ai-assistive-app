@@ -4,6 +4,7 @@
 
 export const A11Y_SPEAK_EVENT = "ai-assistive:speak";
 export const A11Y_STOP_SPEAK_EVENT = "ai-assistive:stop-speak";
+export const A11Y_CANCEL_SPEAK_EVENT = "ai-assistive:cancel-speak";
 
 export const SPEAK_PRIORITY = {
   CRITICAL: 0,
@@ -27,6 +28,11 @@ export function announce(text, { priority = SPEAK_PRIORITY.NORMAL, language } = 
 
 export function stopSpeaking() {
   window.dispatchEvent(new CustomEvent(A11Y_STOP_SPEAK_EVENT));
+}
+
+/** Cancel current TTS and restart voice recognition (does NOT stop listening). */
+export function cancelSpeaking() {
+  window.dispatchEvent(new CustomEvent(A11Y_CANCEL_SPEAK_EVENT));
 }
 
 /**

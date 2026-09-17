@@ -56,6 +56,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
   const queueRef = useRef([]);
   const isPlayingRef = useRef(false);
+  const playingGenRef = useRef(0);
 
   const voicesRef = useRef({ ar: null, en: null });
 
@@ -304,6 +305,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     if (!pausedRef.current) stopAllRecognition();
     setSpeaking(true);
 
+    const gen = ++playingGenRef.current;
+
     const voice = voicesRef.current[next.language];
     const { rate, pitch, volume } = getSpeakParams(next.language, voice);
 
@@ -323,6 +326,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     }, 10000);
 
     const advance = () => {
+      if (gen !== playingGenRef.current) return; // stale — superseded by stopSpeaking/stopAll
       clearInterval(keepAlive);
       isPlayingRef.current = false;
 
@@ -338,6 +342,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     utt.onend = advance;
     utt.onerror = (evt) => {
+      if (gen !== playingGenRef.current) return; // stale
       clearInterval(keepAlive);
       isPlayingRef.current = false;
 
@@ -346,8 +351,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
           // Keep-alive pause/resume side-effect with chunks still pending — continue
           setTimeout(playNext, 100);
         } else {
-          // Queue was cleared by stopSpeaking/stopAll — caller handles recognition state
           setSpeaking(false);
+          // stopSpeaking (cancel-speak) leaves pausedRef false → restart recognition
+          // stopAll (stop-speak) leaves pausedRef true → leave paused
+          if (!pausedRef.current) startAllRecognition();
         }
         return;
       }
@@ -388,6 +395,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   );
 
   const stopSpeaking = useCallback(() => {
+    playingGenRef.current++;
     queueRef.current = [];
     isPlayingRef.current = false;
     setSpeaking(false);
@@ -397,6 +405,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   }, [startAllRecognition]);
 
   const stopAll = useCallback(() => {
+    playingGenRef.current++;
     queueRef.current = [];
     isPlayingRef.current = false;
     setSpeaking(false);

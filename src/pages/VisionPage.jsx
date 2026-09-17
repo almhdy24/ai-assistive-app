@@ -10,7 +10,7 @@ import CameraView from "../components/CameraView";
 import { useCamera } from "../hooks/useCamera";
 import { useHaptics } from "../hooks/useHaptics";
 import { analyzeImage } from "../services/gemini";
-import { announce, SPEAK_PRIORITY } from "../utils/a11y";
+import { announce, cancelSpeaking, SPEAK_PRIORITY } from "../utils/a11y";
 import { pick, voiceGuides } from "../i18n/translations";
 
 const MODE_BY_COMMAND = {
@@ -173,7 +173,7 @@ export default function VisionPage({
     if (!result) return;
     haptics.tap();
     announce(result, {
-      priority: SPEAK_PRIORITY.HIGH,
+      priority: SPEAK_PRIORITY.CRITICAL,
       language: resultLanguage,
     });
   }, [result, resultLanguage, haptics]);
@@ -200,8 +200,14 @@ export default function VisionPage({
       return;
     }
     if (type === "repeat") return handleRepeat();
-    if (type === "back") return navigate(-1);
-    if (type === "home") return navigate("/");
+    if (type === "back") {
+      cancelSpeaking();
+      return navigate(-1);
+    }
+    if (type === "home") {
+      cancelSpeaking();
+      return navigate("/", { replace: true });
+    }
 
     const requestedMode = MODE_BY_COMMAND[type];
     if (requestedMode && requestedMode === mode && !loading && ready) {
@@ -237,6 +243,7 @@ export default function VisionPage({
           className="vision__btn"
           onClick={() => {
             haptics.tap();
+            cancelSpeaking();
             navigate(-1);
           }}
           aria-label="رجوع / Back"
@@ -254,7 +261,8 @@ export default function VisionPage({
           className="vision__btn"
           onClick={() => {
             haptics.tap();
-            navigate("/");
+            cancelSpeaking();
+            navigate("/", { replace: true });
           }}
           aria-label="الرئيسية / Home"
         >

@@ -76,18 +76,24 @@ export default function App() {
   const speakRef = useRef(speak);
   speakRef.current = speak;
 
+  const stopSpeakingRef = useRef(stopSpeaking);
+  stopSpeakingRef.current = stopSpeaking;
+
   useEffect(() => {
     const onSpeak = (e) => {
       const { text, priority, language } = e.detail ?? {};
       if (text) speakRef.current(text, { priority, language });
     };
     const onStop = () => stopAll();
+    const onCancel = () => stopSpeakingRef.current();
 
     window.addEventListener("ai-assistive:speak", onSpeak);
     window.addEventListener("ai-assistive:stop-speak", onStop);
+    window.addEventListener("ai-assistive:cancel-speak", onCancel);
     return () => {
       window.removeEventListener("ai-assistive:speak", onSpeak);
       window.removeEventListener("ai-assistive:stop-speak", onStop);
+      window.removeEventListener("ai-assistive:cancel-speak", onCancel);
     };
   }, [stopAll]);
 
