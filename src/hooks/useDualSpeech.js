@@ -24,6 +24,17 @@ export const synthesisSupported =
 const IS_ANDROID =
   typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 
+// Set localStorage["tts-debug"] = "1" to log the exact voice/rate/pitch/volume
+// and utterance lifecycle. Useful for diagnosing device-specific TTS oddities.
+const ttsDebug = (...args) => {
+  try {
+    if (typeof localStorage !== "undefined" && localStorage.getItem("tts-debug") === "1") {
+      // eslint-disable-next-line no-console
+      console.log("[tts]", ...args);
+    }
+  } catch { /* ignore */ }
+};
+
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
 const ALL_LANGS = ["ar-SA", "en-US"];
 
@@ -393,24 +404,39 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     utt.pitch = IS_ANDROID ? 1.0 : pitch;
     utt.volume = volume;
 
-    // Watchdog instead of pause/resume keep-alive.
-    // pause/resume was breaking onend on Android Chrome, leaving isPlayingRef=true
-    // forever and making the app appear frozen. The watchdog instead:
-    //   1. Detects silent TTS death (speaking goes false without onend firing)
-    //   2. Forces advance past any chunk stuck >13s (Android 15s TTS budget limit)
-    //   3. Auto-resumes if browser paused TTS due to audio focus change
-    let watchdog = null;
-    let idleCount = 0;
-    const startTime = Date.now();
+    ttsDebug("speak", {
+      lang: utt.lang,
+      voice: voice?.name || "(default)",
+      rate: utt.rate,
+      pitch: utt.pitch,
+      volume: utt.volume,
+      chunkLen: next.text.length,
+      gen,
+    });
 
-    const advance = () => {
+    // Inter-chunk gap: Android audio-session release is slower on some vendor
+    // ROMs (e.g. Huawei EMUI). If the next utterance starts before the previous
+    // one's session has released, they overlap and sound distorted ("screaming").
+    const nextGap = IS_ANDROID
+      ? (next.language === "ar" ? 260 : 220)
+      : (next.language === "ar" ? 100 : 80);
+
+    // Guard so advance() can only run once per utterance. Previously, if the
+    // engine misreported `!speaking` briefly between chunks AND then fired the
+    // real onend, both paths would schedule playNext() → two overlapping
+    // utterances on Huawei devices.
+    let advanced = false;
+    const advance = (reason) => {
+      if (advanced) return;
+      advanced = true;
       if (gen !== playingGenRef.current) return; // stale — superseded by stop/cancel
       if (watchdog) clearInterval(watchdog);
       isPlayingRef.current = false;
+      ttsDebug("advance", { reason, gen, queued: queueRef.current.length });
 
       if (queueRef.current.length > 0) {
         // Keep speaking=true; restart recognition only after the last chunk
-        setTimeout(playNext, next.language === "ar" ? 100 : 80);
+        setTimeout(playNext, nextGap);
       } else {
         setSpeaking(false);
         pausedRef.current = false;
@@ -418,64 +444,49 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
+    // Minimal watchdog: ONLY the hard 13-second cap (Android's 15s TTS budget
+    // silently cuts audio; we cancel before that so onerror("canceled") can
+    // continue the queue). We do NOT force-advance on !speaking and do NOT
+    // call ss.resume() — those paths cause overlapping utterances on Huawei
+    // EMUI, since the engine transiently flips paused/speaking between
+    // phonemes, and forcing resume/advance schedules a duplicate playback.
+    let watchdog = null;
+    const startTime = Date.now();
     watchdog = setInterval(() => {
       if (gen !== playingGenRef.current) {
         clearInterval(watchdog);
         return;
       }
-
-      const ss = window.speechSynthesis;
-
-      // Resume if browser auto-paused (audio focus loss, interruption, etc.)
-      if (ss.paused) {
-        ss.resume();
-        idleCount = 0;
-        return;
+      if (Date.now() - startTime > 13000) {
+        clearInterval(watchdog);
+        ttsDebug("watchdog: 13s cap → cancel", { gen });
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
       }
+    }, 500);
 
-      if (!ss.speaking) {
-        // TTS ended (or died silently) without firing onend
-        if (++idleCount >= 3) { // 750ms debounce prevents false positives between chunks
-          clearInterval(watchdog);
-          advance();
-        }
-      } else {
-        idleCount = 0;
-        // Hard 13s cap: force cancel if stuck (Android 15s TTS budget)
-        // onerror("canceled") will continue the queue
-        if (Date.now() - startTime > 13000) {
-          clearInterval(watchdog);
-          ss.cancel();
-        }
-      }
-    }, 250);
-
-    utt.onend = advance;
+    utt.onstart = () => ttsDebug("onstart", { gen });
+    utt.onend = () => advance("onend");
     utt.onerror = (evt) => {
       if (gen !== playingGenRef.current) return; // stale
       if (watchdog) clearInterval(watchdog);
+      ttsDebug("onerror", { gen, error: evt.error });
+      // Treat every error path through advance() so the idempotent guard applies.
+      // interrupted/canceled: keep queue draining if we still have chunks.
+      // any other error: skip the chunk and continue with the rest.
+      if (advanced) return;
+      advanced = true;
       isPlayingRef.current = false;
 
-      if (evt.error === "interrupted" || evt.error === "canceled") {
-        if (queueRef.current.length > 0) {
-          // Genuine external interruption with chunks remaining — try to continue
-          setTimeout(playNext, 100);
-        } else {
-          setSpeaking(false);
-          // stopSpeaking (cancel-speak) leaves pausedRef false → restart recognition
-          // stopAll (stop-speak) leaves pausedRef true → stay paused
-          if (!pausedRef.current) startAllRecognition();
-        }
-        return;
-      }
-
-      // Any other error: skip chunk and continue
       if (queueRef.current.length > 0) {
-        setTimeout(playNext, 100);
+        setTimeout(playNext, nextGap);
       } else {
         setSpeaking(false);
-        pausedRef.current = false;
-        startAllRecognition();
+        // stopSpeaking (cancel-speak) leaves pausedRef false → restart recognition
+        // stopAll (stop-speak) leaves pausedRef true → stay paused
+        if (!pausedRef.current) {
+          pausedRef.current = false;
+          startAllRecognition();
+        }
       }
     };
 
@@ -498,10 +509,16 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         queueRef.current = [];
         needsCancelDelay = true;
       } else if (!isPlayingRef.current && queueRef.current.length === 0) {
-        // Fresh session: cancel any stale browser utterances left from a previous
-        // session (Android Chrome can resume old utterances after foregrounding)
-        window.speechSynthesis.cancel();
-        needsCancelDelay = true;
+        // Only cancel if the engine has orphaned state to flush. Calling cancel()
+        // unconditionally before every fresh speak() was leaving Huawei's audio
+        // session half-torn-down, so the new utterance played over the tail of
+        // the previous one ("screaming"). Query the engine and only intervene
+        // when there is a demonstrated reason.
+        const ss = window.speechSynthesis;
+        if (ss.speaking || ss.pending) {
+          ss.cancel();
+          needsCancelDelay = true;
+        }
       }
 
       const chunks = chunkForSpeech(text, lang);
@@ -511,9 +528,9 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       queueRef.current.sort((a, b) => a.priority - b.priority);
 
       // Give the audio session time to release after cancel() before starting
-      // the next utterance — Android needs more time than desktop browsers
+      // the next utterance — Android vendor ROMs need more time than desktop
       if (needsCancelDelay) {
-        setTimeout(playNext, IS_ANDROID ? 160 : 80);
+        setTimeout(playNext, IS_ANDROID ? 260 : 80);
       } else {
         playNext();
       }
