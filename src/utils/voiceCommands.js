@@ -81,6 +81,11 @@ const EN_COMMANDS = {
     "identify objects",
     "what objects",
   ],
+  analyze: [
+    "analyze again", "analyse again", "new analysis",
+    "scan again", "retake", "take another", "new photo",
+    "take a new photo", "analyze", "analyse",
+  ],
   repeat: [
     "repeat", "say that again", "say it again",
     "again", "one more time", "replay",

@@ -197,8 +197,8 @@ export const voiceGuides = {
   },
   cameraReady: { ar: "الكاميرا جاهزة.", en: "Camera ready." },
   afterResult: {
-    ar: "قل: كرر، أو: الرئيسية.",
-    en: "Say: repeat, or: home.",
+    ar: "قل: كرر، أو: تحليل مرة أخرى، أو: الرئيسية.",
+    en: "Say: repeat, analyze again, or: home.",
   },
   listeningPrompt: { ar: "جاري الاستماع…", en: "Listening…" },
   tapToAnalyze: {

@@ -217,6 +217,13 @@ export default function VisionPage({
       window.location.reload();
       return;
     }
+    if (type === "analyze") {
+      if (!loading && ready) {
+        setResultLanguage(cmdLanguage);
+        runAnalyze();
+      }
+      return;
+    }
     if (type === "repeat") return handleRepeat();
     if (type === "back") {
       cancelSpeaking();
