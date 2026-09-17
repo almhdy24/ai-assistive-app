@@ -163,7 +163,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((lang) => {
       clearTimeout(restartTimersRef.current[lang]);
-      try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
+      // .abort() releases the mic immediately; .stop() waits for a final
+      // result which on Huawei EMUI keeps the audio session hot long enough
+      // to collide with TTS output.
+      try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
     });
     setListening(false);
   }, []);
@@ -235,7 +238,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((l) => {
       clearTimeout(restartTimersRef.current[l]);
-      try { recognizersRef.current[l]?.stop(); } catch { /* ignore */ }
+      try { recognizersRef.current[l]?.abort(); } catch { /* ignore */ }
     });
     setListening(false);
 
@@ -344,7 +347,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       clearTimeout(flushTimerRef.current);
       ALL_LANGS.forEach((lang) => {
         clearTimeout(restartTimersRef.current[lang]);
-        try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
+        try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
       });
       recognizersRef.current = {};
     };
@@ -362,7 +365,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     if (!next) return;
 
     isPlayingRef.current = true;
-    if (!pausedRef.current) stopAllRecognition();
+    // Always abort recognizers before speaking — even if pausedRef is true,
+    // Huawei may still be holding the mic from a recognizer that was previously
+    // asked to stop. Idempotent abort() is cheap and forces mic release.
+    stopAllRecognition();
     setSpeaking(true);
 
     const gen = ++playingGenRef.current;
@@ -465,7 +471,14 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
-    window.speechSynthesis.speak(utt);
+    // Give the Huawei audio driver time to actually release the mic after
+    // recognizer .abort() before speak() opens the TTS output channel.
+    // Dual-language recognition doubles mic contention vs the standalone
+    // reference code that ran a single recognizer.
+    setTimeout(() => {
+      if (gen !== playingGenRef.current) return; // superseded before we got a chance
+      try { window.speechSynthesis.speak(utt); } catch { /* ignore */ }
+    }, 250);
   }, [startAllRecognition, stopAllRecognition]);
 
   const speak = useCallback(
@@ -529,7 +542,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((lang) => {
       clearTimeout(restartTimersRef.current[lang]);
-      try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
+      try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
     });
     setListening(false);
   }, []);
