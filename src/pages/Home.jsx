@@ -138,7 +138,7 @@ export default function Home({
           <button
             type="button"
             className="home-lang-btn"
-            onClick={switchLanguage}
+            onClick={() => switchLanguage()}
             aria-label={lang === "ar" ? "Switch to English" : "التبديل إلى العربية"}
           >
             {lang === "ar" ? "EN" : "AR"}
