@@ -87,7 +87,15 @@
 /* App brand / title */
 
 .home-brand {
-  text-align: center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.home-brand-text {
+  flex: 1;
+  min-width: 0;
 }
 
 .home-brand-title {
@@ -103,6 +111,33 @@
   font-size: 1rem;
   color: var(--text-muted);
   line-height: 1.45;
+}
+
+.home-lang-btn {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 7px 15px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--primary);
+  background: var(--primary-soft);
+  border: 1.5px solid var(--primary);
+  border-radius: 999px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.home-lang-btn:hover {
+  background: var(--primary);
+  color: #fff;
+}
+
+.home-lang-btn:active {
+  background: var(--primary-dark);
+  color: #fff;
+  transform: scale(0.94);
 }
 
 /* Voice button — primary interaction */

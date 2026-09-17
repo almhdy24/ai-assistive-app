@@ -61,6 +61,13 @@ export default function Home({
   const lang = lastCommandLanguage || "ar";
   const mountedCmdId = useRef(voiceCommand?.id ?? null);
 
+  function switchLanguage() {
+    haptics.tap();
+    const next = lang === "ar" ? "en" : "ar";
+    try { localStorage.setItem("language", next); } catch { /* ignore */ }
+    window.location.reload();
+  }
+
   const [lastHeard, setLastHeard] = useState(null);
   const heardTimerRef = useRef(null);
   const notUnderstoodCooldownRef = useRef(0);
@@ -124,8 +131,18 @@ export default function Home({
       <main className="home-content" id="main-content" tabIndex="-1">
 
         <header className="home-brand">
-          <h1 className="home-brand-title">{pick(t.appName, lang)}</h1>
-          <p className="home-brand-sub">{pick(t.tellMeWhatYouNeed, lang)}</p>
+          <div className="home-brand-text">
+            <h1 className="home-brand-title">{pick(t.appName, lang)}</h1>
+            <p className="home-brand-sub">{pick(t.tellMeWhatYouNeed, lang)}</p>
+          </div>
+          <button
+            type="button"
+            className="home-lang-btn"
+            onClick={switchLanguage}
+            aria-label={lang === "ar" ? "Switch to English" : "التبديل إلى العربية"}
+          >
+            {lang === "ar" ? "EN" : "AR"}
+          </button>
         </header>
 
         {/* Primary: voice button */}
