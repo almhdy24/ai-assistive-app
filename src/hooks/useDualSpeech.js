@@ -273,15 +273,25 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       rec.maxAlternatives = language ? 3 : 5;
       rec.lang = lang;
 
+      // Ignore onend/onerror on recognizer instances we've already replaced.
+      // startAllRecognition and scheduleRestart abort the current recognizer
+      // before creating a new one; the aborted instance's onend/onerror fires
+      // asynchronously — if we don't check "am I still the current recognizer?"
+      // we schedule a restart against the freshly-started recognizer, which
+      // aborts it, which fires another stale onend, and so on — infinite loop.
+      const isCurrent = () => recognizersRef.current[lang] === rec;
+
       rec.onstart = () => {
         // Reaching onstart means the OS granted mic access to this recognizer
         setMicPermission("granted");
-        if (!pausedRef.current) setListening(true);
+        if (!pausedRef.current && isCurrent()) setListening(true);
       };
       rec.onend = () => {
+        if (!isCurrent()) return;
         if (!pausedRef.current) scheduleRestart(lang);
       };
       rec.onerror = (event) => {
+        if (!isCurrent()) return;
         if (
           event.error === "not-allowed" ||
           event.error === "service-not-allowed"
@@ -294,6 +304,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
           return;
         }
         if (event.error === "no-speech") return;
+        if (event.error === "aborted" || event.error === "canceled") return;
         scheduleRestart(lang);
       };
       rec.onresult = (event) => {
