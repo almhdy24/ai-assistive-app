@@ -38,8 +38,6 @@ export default function App() {
   const [languageIntent, setLanguageIntent] = useState(null);
 
   const handleSelectLanguage = useCallback((lang) => {
-    // Stop any in-flight TTS and recognition before rebuilding for the new language
-    window.dispatchEvent(new CustomEvent("ai-assistive:stop-speak"));
     try {
       localStorage.setItem("language", lang);
     } catch {
@@ -49,6 +47,22 @@ export default function App() {
     setLanguageIntent(null);
     setVoiceCommand(null);
   }, []);
+
+  // Announce the newly selected language so the user hears audio confirmation
+  // and the OS audio session reinitialises for the new TTS engine.
+  const langSwitchMountedRef = useRef(false);
+  useEffect(() => {
+    if (!langSwitchMountedRef.current) {
+      langSwitchMountedRef.current = true;
+      return;
+    }
+    if (!primaryLanguage) return;
+    const msg = primaryLanguage === "en" ? "English" : "عربي";
+    setTimeout(
+      () => speakRef.current(msg, { priority: SPEAK_PRIORITY.HIGH, language: primaryLanguage }),
+      250
+    );
+  }, [primaryLanguage]);
 
   const handleCommand = useCallback(
     (transcript, detectedLanguage) => {

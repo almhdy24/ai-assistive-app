@@ -72,6 +72,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const voicesRef = useRef({ ar: null, en: null });
 
   const activeLangs = language ? [LANG_CODE[language]] : ALL_LANGS;
+  const activeLangsRef = useRef(activeLangs);
+  activeLangsRef.current = activeLangs;
 
   useEffect(() => {
     onCommandRef.current = onCommand;
@@ -103,6 +105,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   /* ---------------------------------------------------------------- */
 
   const scheduleRestart = useCallback((lang) => {
+    if (!activeLangsRef.current.includes(lang)) return;
     clearTimeout(restartTimersRef.current[lang]);
     restartTimersRef.current[lang] = setTimeout(() => {
       if (pausedRef.current) return;
@@ -274,8 +277,11 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     makeRecognizerRef.current = makeRecognizer;
 
-    // Reset paused state — language change means a clean restart
-    pausedRef.current = false;
+    // Only reset paused if TTS is idle — if TTS is playing, advance() will call
+    // startAllRecognition() when done, which properly resets pausedRef then.
+    if (!isPlayingRef.current) {
+      pausedRef.current = false;
+    }
     activeLangs.forEach((lang) => {
       const rec = makeRecognizer(lang);
       recognizersRef.current[lang] = rec;
