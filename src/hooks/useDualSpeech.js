@@ -133,7 +133,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((lang) => {
       clearTimeout(restartTimersRef.current[lang]);
-      try { recognizersRef.current[lang]?.stop(); } catch { /* ignore */ }
+      // .abort() releases the mic immediately; .stop() waits for a final
+      // result which on Huawei EMUI keeps the audio session hot long enough
+      // to collide with the TTS output and produce distorted "screaming".
+      try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
     });
     setListening(false);
   }, []);
@@ -205,7 +208,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     pausedRef.current = true;
     ALL_LANGS.forEach((l) => {
       clearTimeout(restartTimersRef.current[l]);
-      try { recognizersRef.current[l]?.stop(); } catch { /* ignore */ }
+      try { recognizersRef.current[l]?.abort(); } catch { /* ignore */ }
     });
     setListening(false);
 
@@ -332,34 +335,24 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     if (!next) return;
 
     isPlayingRef.current = true;
-    if (!pausedRef.current) stopAllRecognition();
+    // Always abort recognizers before speaking — even if pausedRef is true,
+    // Huawei may still be holding the mic from a recognizer that was only
+    // .stop()ed. Idempotent abort() is cheap and forces the audio session free.
+    stopAllRecognition();
     setSpeaking(true);
 
     const gen = ++playingGenRef.current;
 
-    // Mirrors known-good standalone speakText: no voice assignment (let utt.lang
-    // route to OS TTS), fixed rate/pitch/volume, cancel-before-speak, and a
-    // 10s pause/resume keep-alive to prevent Android from silently cutting long
-    // utterances at its 15s TTS budget.
     const utt = new SpeechSynthesisUtterance(next.text);
     utt.lang = next.language === "ar" ? "ar-SA" : "en-US";
     utt.rate = next.language === "ar" ? 0.88 : 0.9;
     utt.pitch = 1;
     utt.volume = 1;
 
-    let keepAlive = null;
-    const clearKeepAlive = () => {
-      if (keepAlive) {
-        clearInterval(keepAlive);
-        keepAlive = null;
-      }
-    };
-
     let advanced = false;
     const advance = () => {
       if (advanced) return;
       advanced = true;
-      clearKeepAlive();
       if (gen !== playingGenRef.current) return; // stale — superseded
       isPlayingRef.current = false;
 
@@ -374,24 +367,19 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
-    utt.onstart = () => {
-      clearKeepAlive();
-      keepAlive = setInterval(() => {
-        if (gen !== playingGenRef.current) {
-          clearKeepAlive();
-          return;
-        }
-        try {
-          window.speechSynthesis.pause();
-          window.speechSynthesis.resume();
-        } catch { /* ignore */ }
-      }, 10000);
-    };
     utt.onend = advance;
     utt.onerror = advance;
 
-    try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
-    window.speechSynthesis.speak(utt);
+    // Give the Huawei audio driver time to actually release the mic after
+    // recognizer .abort() before speak() opens the TTS output channel.
+    // Synchronous cancel+speak worked in the standalone (which had at most
+    // one recognizer); this app runs dual-language recognition, doubling the
+    // mic contention. 250ms is small enough to feel snappy.
+    setTimeout(() => {
+      if (gen !== playingGenRef.current) return; // superseded before we got a chance
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      try { window.speechSynthesis.speak(utt); } catch { /* ignore */ }
+    }, 250);
   }, [startAllRecognition, stopAllRecognition]);
 
   const speak = useCallback(
