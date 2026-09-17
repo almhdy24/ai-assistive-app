@@ -130,9 +130,11 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     setListening(false);
   }, []);
 
+  // Use the ref (not closure) so stale advance()/timer closures created before a
+  // language change still start the CURRENT-language recognizer, not the old one.
   const startAllRecognition = useCallback(() => {
     pausedRef.current = false;
-    activeLangs.forEach((lang) => {
+    activeLangsRef.current.forEach((lang) => {
       const make = makeRecognizerRef.current;
       if (make) {
         // Always create a fresh instance — Android Chrome can't reliably restart
@@ -145,8 +147,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         try { recognizersRef.current[lang]?.start(); } catch { /* ignore */ }
       }
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [language]);
+  }, []);
 
   const pendingRef = useRef({});
   const flushTimerRef = useRef(null);

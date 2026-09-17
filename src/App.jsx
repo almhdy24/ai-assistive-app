@@ -48,22 +48,6 @@ export default function App() {
     setVoiceCommand(null);
   }, []);
 
-  // Announce the newly selected language so the user hears audio confirmation
-  // and the OS audio session reinitialises for the new TTS engine.
-  const langSwitchMountedRef = useRef(false);
-  useEffect(() => {
-    if (!langSwitchMountedRef.current) {
-      langSwitchMountedRef.current = true;
-      return;
-    }
-    if (!primaryLanguage) return;
-    const msg = primaryLanguage === "en" ? "English" : "عربي";
-    setTimeout(
-      () => speakRef.current(msg, { priority: SPEAK_PRIORITY.HIGH, language: primaryLanguage }),
-      250
-    );
-  }, [primaryLanguage]);
-
   const handleCommand = useCallback(
     (transcript, detectedLanguage) => {
       if (!primaryLanguage) {
@@ -109,6 +93,23 @@ export default function App() {
 
   const startRecognitionRef = useRef(startRecognition);
   startRecognitionRef.current = startRecognition;
+
+  // Announce the newly selected language so the user hears audio confirmation
+  // and the OS audio session reinitialises for the new TTS engine.
+  const langSwitchMountedRef = useRef(false);
+  useEffect(() => {
+    if (!langSwitchMountedRef.current) {
+      langSwitchMountedRef.current = true;
+      return;
+    }
+    if (!primaryLanguage) return;
+    const msg = primaryLanguage === "en" ? "English" : "عربي";
+    const timer = setTimeout(
+      () => speakRef.current(msg, { priority: SPEAK_PRIORITY.HIGH, language: primaryLanguage }),
+      250
+    );
+    return () => clearTimeout(timer);
+  }, [primaryLanguage]);
 
   /* Network status — announce offline/online changes */
   useEffect(() => {
