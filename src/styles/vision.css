@@ -1,0 +1,404 @@
+/* =========================================================
+   Vision — full viewport camera experience
+   ========================================================= */
+
+.vision {
+  position: relative;
+
+  width: 100%;
+  max-width: 480px;
+  min-height: 100dvh;
+
+  margin: 0 auto;
+  overflow: hidden;
+
+  background: #000;
+}
+
+.vision .camera-container {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  /* Android composites video above z-indexed elements; block pointer events
+     so the overlay buttons receive touches instead of the video layer. */
+  pointer-events: none;
+}
+
+/* ---------- Bars ---------- */
+
+.vision__bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 5;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+
+  padding: 0 16px;
+}
+
+.vision__bar--top {
+  top: 0;
+  padding-top: max(14px, env(safe-area-inset-top));
+  padding-bottom: 14px;
+}
+
+.vision__bar--bottom {
+  bottom: 0;
+  justify-content: center;
+  padding-bottom: max(22px, env(safe-area-inset-bottom));
+  padding-top: 22px;
+}
+
+.vision__btn {
+  width: 46px;
+  height: 46px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  color: #fff;
+  background: rgba(15, 23, 42, 0.55);
+
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+
+  font-size: 1.2rem;
+  font-weight: 700;
+
+  cursor: pointer;
+
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.vision__btn:hover { background: rgba(15, 23, 42, 0.78); }
+.vision__btn:active { transform: scale(0.94); }
+
+.vision__mode {
+  flex: 1;
+  max-width: 200px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+
+  margin: 0 auto;
+  padding: 10px 18px;
+
+  color: #fff;
+  background: rgba(15, 23, 42, 0.55);
+
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+
+  font-size: 0.9rem;
+  font-weight: 600;
+
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vision__mode-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  background: #22c55e;
+  border-radius: 50%;
+  animation: dot-breathe 2.4s infinite ease-in-out;
+}
+
+@keyframes dot-breathe {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%      { transform: scale(0.85); opacity: 0.55; }
+}
+
+/* ---------- Center halo ---------- */
+
+.vision__center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  pointer-events: none;
+}
+
+.vision__halo {
+  position: relative;
+  width: 110px;
+  height: 110px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vision__halo-ring,
+.vision__halo-dot {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.vision__halo-ring {
+  inset: 0;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  opacity: 0;
+}
+
+.vision__halo-dot {
+  width: 22px;
+  height: 22px;
+  background: #22c55e;
+  box-shadow: 0 0 24px rgba(34, 197, 94, 0.85);
+  transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+/* Phase styles */
+
+.vision__center[data-phase="starting"] .vision__halo-dot,
+.vision__center[data-phase="thinking"] .vision__halo-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 24px rgba(245, 158, 11, 0.85);
+}
+
+.vision__center[data-phase="result"] .vision__halo-dot {
+  background: #3b82f6;
+  box-shadow: 0 0 24px rgba(59, 130, 246, 0.85);
+}
+
+.vision__center[data-phase="error"] .vision__halo-dot {
+  background: #ef4444;
+  box-shadow: 0 0 24px rgba(239, 68, 68, 0.85);
+}
+
+.vision__center[data-phase="thinking"] .vision__halo-ring {
+  opacity: 1;
+  animation: halo-expand 1.5s infinite ease-out;
+}
+
+.vision__center[data-phase="ready"] .vision__halo-ring {
+  opacity: 0.6;
+  animation: halo-expand 3s infinite ease-out;
+}
+
+@keyframes halo-expand {
+  0%   { transform: scale(0.75); opacity: 0.85; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+/* ---------- Hint text ---------- */
+
+.vision__hint {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  top: calc(50% + 84px);
+
+  color: #fff;
+  font-size: 0.98rem;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.45;
+
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.75);
+
+  z-index: 4;
+  pointer-events: none;
+
+  animation: hint-in 0.3s ease-out;
+}
+
+@keyframes hint-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- Text scan line (read-text mode only) ---------- */
+
+.vision__scan-line {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  height: 2px;
+  background: rgba(34, 197, 94, 0.85);
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.7);
+  border-radius: 1px;
+  z-index: 4;
+  pointer-events: none;
+  animation: scan-sweep 1.8s ease-in-out infinite;
+}
+
+@keyframes scan-sweep {
+  0%   { top: 25%; }
+  50%  { top: 68%; }
+  100% { top: 25%; }
+}
+
+/* ---------- Shutter ---------- */
+
+.vision__shutter {
+  position: relative;
+  width: 84px;
+  height: 84px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  background: transparent;
+  border: 0;
+
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.vision__shutter:hover:not(:disabled) { transform: scale(1.05); }
+.vision__shutter:active:not(:disabled) { transform: scale(0.94); }
+
+.vision__shutter:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.vision__shutter-ring {
+  position: absolute;
+  inset: 0;
+
+  border: 4px solid #fff;
+  border-radius: 50%;
+
+  box-shadow: 0 0 26px rgba(255, 255, 255, 0.4);
+}
+
+.vision__shutter-dot {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  background: #fff;
+  border-radius: 50%;
+  transition: background-color 0.15s ease;
+}
+
+.vision__shutter:not(:disabled):hover .vision__shutter-dot {
+  background: #eff6ff;
+}
+
+/* ---------- Bottom sheet ---------- */
+
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+
+  max-height: 58%;
+  overflow-y: auto;
+
+  padding: 12px 20px max(24px, env(safe-area-inset-bottom));
+
+  background: var(--surface);
+
+  border-top-left-radius: 22px;
+  border-top-right-radius: 22px;
+
+  box-shadow: 0 -12px 36px rgba(0, 0, 0, 0.35);
+
+  z-index: 20;
+
+  animation: sheet-in 0.32s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.sheet__handle {
+  width: 44px;
+  height: 5px;
+  margin: 0 auto 14px;
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.sheet__text {
+  margin: 0 0 16px;
+
+  color: var(--text);
+  font-size: 1.02rem;
+  line-height: 1.7;
+
+  white-space: pre-wrap;
+}
+
+.sheet__actions {
+  display: flex;
+  gap: 10px;
+}
+
+.sheet__btn {
+  flex: 1;
+  min-height: 52px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 12px 16px;
+
+  color: var(--text-body);
+  background: var(--surface);
+
+  border: 2px solid var(--border-dark);
+  border-radius: var(--radius-md);
+
+  font-size: 0.95rem;
+  font-weight: 600;
+
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.sheet__btn:hover { background: var(--surface-muted); }
+
+.sheet__btn--primary {
+  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.sheet__btn--primary:hover { background: var(--primary-dark); }
+
+.sheet--error {
+  background: #fef3f2;
+  border-top: 2px solid #fecdca;
+}
+
+.sheet__error {
+  margin: 0;
+  color: #7a271a;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+@keyframes sheet-in {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vision__halo-ring,
+  .vision__mode-dot,
+  .vision__scan-line {
+    animation: none !important;
+  }
+}
