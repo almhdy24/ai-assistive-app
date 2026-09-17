@@ -38,6 +38,8 @@ export default function App() {
   const [languageIntent, setLanguageIntent] = useState(null);
 
   const handleSelectLanguage = useCallback((lang) => {
+    // Stop any in-flight TTS and recognition before rebuilding for the new language
+    window.dispatchEvent(new CustomEvent("ai-assistive:stop-speak"));
     try {
       localStorage.setItem("language", lang);
     } catch {

@@ -58,6 +58,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const restartTimersRef = useRef({});
   const pausedRef = useRef(false);
   const onCommandRef = useRef(onCommand);
+  // Tracks the post-command 1600ms restart timer so language changes can cancel it
+  const commandRestartTimerRef = useRef(null);
 
   // Factory stored in ref so startAllRecognition/scheduleRestart can always
   // create fresh instances (Android Chrome can't reliably restart a stopped recognizer)
@@ -198,7 +200,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     setLastCommandLanguage(detected);
     onCommandRef.current?.(transcript, detected);
 
-    setTimeout(() => {
+    commandRestartTimerRef.current = setTimeout(() => {
       // Skip if TTS is active — advance() will restart recognition after last chunk
       if (!isPlayingRef.current) {
         pausedRef.current = false;
@@ -272,6 +274,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     makeRecognizerRef.current = makeRecognizer;
 
+    // Reset paused state — language change means a clean restart
+    pausedRef.current = false;
     activeLangs.forEach((lang) => {
       const rec = makeRecognizer(lang);
       recognizersRef.current[lang] = rec;
@@ -281,6 +285,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     return () => {
       makeRecognizerRef.current = null;
       pausedRef.current = true;
+      // Cancel the post-command restart timer — if language is changing, the
+      // stale timer would call the old-language startAllRecognition and start
+      // the wrong recognizer, which can echo-loop into TTS ("screaming")
+      clearTimeout(commandRestartTimerRef.current);
       clearTimeout(flushTimerRef.current);
       ALL_LANGS.forEach((lang) => {
         clearTimeout(restartTimersRef.current[lang]);
