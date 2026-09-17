@@ -7,7 +7,6 @@ import {
   getSpeakParams,
   pickBestVoice,
 } from "../utils/arabicTts";
-import { pushTtsEvent } from "../utils/ttsDiagnostics";
 
 const Ctor =
   typeof window !== "undefined"
@@ -24,12 +23,6 @@ export const synthesisSupported =
 // TTS engine cleanly.
 const IS_ANDROID =
   typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
-
-// Push every debug event into the in-app ring buffer so the TtsDiagnosticsPanel
-// can display it on devices without DevTools.
-const ttsDebug = (name, data) => {
-  pushTtsEvent(name, data);
-};
 
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
 const ALL_LANGS = ["ar-SA", "en-US"];
@@ -79,43 +72,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const playingGenRef = useRef(0);
 
   const voicesRef = useRef({ ar: null, en: null });
-
-  // ─── Temporary TTS instrumentation ────────────────────────────────
-  // Diagnostic-only helpers used to trace Huawei EMUI overlap. Not
-  // part of TTS behavior — safe to remove once the root cause is
-  // identified from the trace. Every helper only reads/writes existing
-  // refs; no new state is introduced.
-  const genLifecycleRef = useRef({}); // gen -> { started, ended }
-  const snapshot = () => {
-    const ss = typeof window !== "undefined" ? window.speechSynthesis : null;
-    return {
-      speaking: !!ss?.speaking,
-      pending: !!ss?.pending,
-      paused: !!ss?.paused,
-      queueLen: queueRef.current.length,
-      isPlaying: isPlayingRef.current,
-      curGen: playingGenRef.current,
-    };
-  };
-  const bumpGen = (source) => {
-    const prev = playingGenRef.current;
-    const prevLc = genLifecycleRef.current[prev];
-    if (prevLc && prevLc.started && !prevLc.ended) {
-      ttsDebug("gen-abandoned", { gen: prev, source, ...snapshot() });
-      prevLc.ended = true; // stop us from re-flagging on the next bump
-    }
-    const next = prev + 1;
-    playingGenRef.current = next;
-    genLifecycleRef.current[next] = { started: false, ended: false };
-    ttsDebug("gen-bump", { previousGen: prev, newGen: next, source, ...snapshot() });
-    return next;
-  };
-  const ssCancel = (source) => {
-    ttsDebug("ss.cancel-called", { source, ...snapshot() });
-    try { window.speechSynthesis.cancel(); }
-    catch (e) { ttsDebug("ss.cancel-threw", { source, err: String(e) }); }
-  };
-  // ──────────────────────────────────────────────────────────────────
 
   const activeLangs = language ? [LANG_CODE[language]] : ALL_LANGS;
   const activeLangsRef = useRef(activeLangs);
@@ -401,28 +357,15 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   /* ---------------------------------------------------------------- */
 
   const playNext = useCallback(() => {
-    ttsDebug("playNext-entry", { ...snapshot() });
-    if (isPlayingRef.current) {
-      ttsDebug("playNext-skip-isPlaying", { ...snapshot() });
-      return;
-    }
+    if (isPlayingRef.current) return;
     const next = queueRef.current.shift();
-    if (!next) {
-      ttsDebug("playNext-empty-queue", { ...snapshot() });
-      return;
-    }
-    ttsDebug("queue-consume", {
-      chunkLen: next.text.length,
-      lang: next.language,
-      priority: next.priority,
-      remaining: queueRef.current.length,
-    });
+    if (!next) return;
 
     isPlayingRef.current = true;
     if (!pausedRef.current) stopAllRecognition();
     setSpeaking(true);
 
-    const gen = bumpGen("playNext");
+    const gen = ++playingGenRef.current;
 
     // On Android: never assign utt.voice — let utt.lang route to the OS TTS.
     // On other platforms: re-validate the cached voice against the live list
@@ -450,16 +393,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     utt.pitch = IS_ANDROID ? 1.0 : pitch;
     utt.volume = volume;
 
-    ttsDebug("speak", {
-      lang: utt.lang,
-      voice: voice?.name || "(default)",
-      rate: utt.rate,
-      pitch: utt.pitch,
-      volume: utt.volume,
-      chunkLen: next.text.length,
-      gen,
-    });
-
     // Inter-chunk gap: Android audio-session release is slower on some vendor
     // ROMs (e.g. Huawei EMUI). If the next utterance starts before the previous
     // one's session has released, they overlap and sound distorted ("screaming").
@@ -472,22 +405,12 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     // real onend, both paths would schedule playNext() → two overlapping
     // utterances on Huawei devices.
     let advanced = false;
-    const advance = (reason) => {
-      ttsDebug("advance-called", {
-        reason, gen,
-        stale: gen !== playingGenRef.current,
-        alreadyAdvanced: advanced,
-        ...snapshot(),
-      });
+    const advance = () => {
       if (advanced) return;
       advanced = true;
-      if (gen !== playingGenRef.current) {
-        ttsDebug("advance-skip-stale", { reason, gen, curGen: playingGenRef.current });
-        return; // stale — superseded by stop/cancel
-      }
+      if (gen !== playingGenRef.current) return; // stale — superseded by stop/cancel
       if (watchdog) clearInterval(watchdog);
       isPlayingRef.current = false;
-      ttsDebug("advance", { reason, gen, queued: queueRef.current.length, ...snapshot() });
 
       if (queueRef.current.length > 0) {
         // Keep speaking=true; restart recognition only after the last chunk
@@ -507,7 +430,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     // phonemes, and forcing resume/advance schedules a duplicate playback.
     let watchdog = null;
     const startTime = Date.now();
-    ttsDebug("watchdog-start", { gen });
     watchdog = setInterval(() => {
       if (gen !== playingGenRef.current) {
         clearInterval(watchdog);
@@ -515,35 +437,14 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
       if (Date.now() - startTime > 13000) {
         clearInterval(watchdog);
-        ttsDebug("watchdog-fire", { gen, ...snapshot() });
-        ssCancel("watchdog");
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
       }
     }, 500);
 
-    utt.onstart = () => {
-      const lc = genLifecycleRef.current[gen];
-      if (lc) lc.started = true;
-      ttsDebug("onstart", { gen, ...snapshot() });
-    };
-    utt.onend = () => {
-      const lc = genLifecycleRef.current[gen];
-      if (lc) lc.ended = true;
-      ttsDebug("onend-raw", { gen, stale: gen !== playingGenRef.current, ...snapshot() });
-      advance("onend");
-    };
-    utt.onpause = () => ttsDebug("utt-onpause", { gen, ...snapshot() });
-    utt.onresume = () => ttsDebug("utt-onresume", { gen, ...snapshot() });
-    utt.onerror = (evt) => {
-      const lc = genLifecycleRef.current[gen];
-      if (lc) lc.ended = true;
-      ttsDebug("onerror-raw", {
-        gen, error: evt.error,
-        stale: gen !== playingGenRef.current,
-        ...snapshot(),
-      });
+    utt.onend = () => advance();
+    utt.onerror = () => {
       if (gen !== playingGenRef.current) return; // stale
       if (watchdog) clearInterval(watchdog);
-      ttsDebug("onerror", { gen, error: evt.error });
       // Treat every error path through advance() so the idempotent guard applies.
       // interrupted/canceled: keep queue draining if we still have chunks.
       // any other error: skip the chunk and continue with the rest.
@@ -564,11 +465,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
-    ttsDebug("ss.speak-called", {
-      gen, chunkLen: next.text.length, lang: utt.lang,
-      rate: utt.rate, pitch: utt.pitch, volume: utt.volume,
-      ...snapshot(),
-    });
     window.speechSynthesis.speak(utt);
   }, [startAllRecognition, stopAllRecognition]);
 
@@ -578,53 +474,35 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
       const lang = langOverride || (language ?? detectPrimaryLang(text, "ar"));
 
-      ttsDebug("speak-request", {
-        textLen: text.length,
-        priority,
-        langOverride: langOverride ?? null,
-        lang,
-        ...snapshot(),
-      });
-
       let needsCancelDelay = false;
 
       if (priority === SPEAK_PRIORITY.CRITICAL && isPlayingRef.current) {
         // Invalidate in-flight watchdog/callbacks before canceling
-        ttsDebug("speak-critical-preempt", { ...snapshot() });
-        bumpGen("speak-critical");
-        ssCancel("speak-critical");
+        playingGenRef.current++;
+        window.speechSynthesis.cancel();
         isPlayingRef.current = false;
         queueRef.current = [];
-        ttsDebug("queue-cleared", { source: "speak-critical" });
         needsCancelDelay = true;
       } else if (!isPlayingRef.current && queueRef.current.length === 0) {
         // Match known-good standalone code: unconditional cancel() before every
         // speak(). The idle-check was masking latent Huawei TTS-engine state
-        // that is not visible from the JS event stream (confirmed by clean
-        // lifecycle traces during audible screaming). Keep no cancel-delay —
+        // that is not visible from the JS event stream. Keep no cancel-delay —
         // the old code runs cancel + speak synchronously and works on the same
         // Huawei device.
-        ssCancel("speak-precancel");
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
       }
 
       const chunks = chunkForSpeech(text, lang);
-      chunks.forEach((chunk, i) => {
-        queueRef.current.push({ text: chunk, priority, language: lang });
-        ttsDebug("queue-add", {
-          idx: i, chunkLen: chunk.length, lang, priority,
-          queueLen: queueRef.current.length,
-        });
-      });
+      chunks.forEach((chunk) =>
+        queueRef.current.push({ text: chunk, priority, language: lang })
+      );
       queueRef.current.sort((a, b) => a.priority - b.priority);
 
       // Give the audio session time to release after cancel() before starting
       // the next utterance — Android vendor ROMs need more time than desktop
       if (needsCancelDelay) {
-        const delay = IS_ANDROID ? 260 : 80;
-        ttsDebug("speak-schedule-delayed", { delay, ...snapshot() });
-        setTimeout(playNext, delay);
+        setTimeout(playNext, IS_ANDROID ? 260 : 80);
       } else {
-        ttsDebug("speak-schedule-immediate", { ...snapshot() });
         playNext();
       }
     },
@@ -632,23 +510,21 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   );
 
   const stopSpeaking = useCallback(() => {
-    ttsDebug("stop-speaking", { ...snapshot() });
-    bumpGen("stopSpeaking");
+    playingGenRef.current++;
     queueRef.current = [];
     isPlayingRef.current = false;
     setSpeaking(false);
-    if (synthesisSupported) ssCancel("stopSpeaking");
+    if (synthesisSupported) window.speechSynthesis.cancel();
     pausedRef.current = false;
     startAllRecognition();
   }, [startAllRecognition]);
 
   const stopAll = useCallback(() => {
-    ttsDebug("stop-all", { ...snapshot() });
-    bumpGen("stopAll");
+    playingGenRef.current++;
     queueRef.current = [];
     isPlayingRef.current = false;
     setSpeaking(false);
-    if (synthesisSupported) ssCancel("stopAll");
+    if (synthesisSupported) window.speechSynthesis.cancel();
 
     pausedRef.current = true;
     ALL_LANGS.forEach((lang) => {
