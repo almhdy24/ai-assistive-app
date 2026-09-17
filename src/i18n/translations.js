@@ -108,9 +108,21 @@ export const translations = {
     ar: "يجب السماح باستخدام الميكروفون للأوامر الصوتية.",
     en: "Microphone permission is required for voice commands.",
   },
+  microphonePermissionAction: {
+    ar: "افتح إعدادات المتصفح واسمح باستخدام الميكروفون لهذا الموقع، ثم اضغط الزر لإعادة المحاولة.",
+    en: "Open the browser site settings, allow the microphone for this site, then press the button to retry.",
+  },
+  microphoneRetry: {
+    ar: "طلب إذن الميكروفون",
+    en: "Request microphone permission",
+  },
   speechUnavailable: {
     ar: "التعرف الصوتي غير مدعوم في هذا المتصفح.",
     en: "Voice recognition is not supported by this browser.",
+  },
+  synthesisUnavailable: {
+    ar: "قراءة النص الصوتية غير مدعومة في هذا المتصفح.",
+    en: "Text-to-speech is not supported by this browser.",
   },
 
   networkRequired: {

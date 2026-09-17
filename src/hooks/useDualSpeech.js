@@ -53,6 +53,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [lastCommandLanguage, setLastCommandLanguage] = useState(language || "ar");
+  // "granted" | "denied" | "prompt" | "unknown"
+  const [micPermission, setMicPermission] = useState("unknown");
 
   const recognizersRef = useRef({});
   const restartTimersRef = useRef({});
@@ -82,6 +84,42 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   useEffect(() => {
     if (language) setLastCommandLanguage(language);
   }, [language]);
+
+  // Proactive permission probe — some browsers expose the current state without
+  // triggering a prompt. If denied, we can surface it before rec.start() fails silently.
+  useEffect(() => {
+    if (!speechSupported) return;
+    if (typeof navigator === "undefined" || !navigator.permissions?.query) return;
+    let status;
+    const onChange = () => setMicPermission(status?.state || "unknown");
+    navigator.permissions
+      .query({ name: "microphone" })
+      .then((s) => {
+        status = s;
+        setMicPermission(s.state);
+        s.addEventListener?.("change", onChange);
+      })
+      .catch(() => { /* permissions API not available for microphone in this browser */ });
+    return () => {
+      status?.removeEventListener?.("change", onChange);
+    };
+  }, []);
+
+  const requestMicPermission = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      return false;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // We only need the prompt — SpeechRecognition manages its own mic
+      stream.getTracks().forEach((t) => t.stop());
+      setMicPermission("granted");
+      return true;
+    } catch {
+      setMicPermission("denied");
+      return false;
+    }
+  }, []);
 
   useEffect(() => {
     if (!synthesisSupported) return;
@@ -233,6 +271,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       rec.lang = lang;
 
       rec.onstart = () => {
+        // Reaching onstart means the OS granted mic access to this recognizer
+        setMicPermission("granted");
         if (!pausedRef.current) setListening(true);
       };
       rec.onend = () => {
@@ -243,6 +283,11 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
           event.error === "not-allowed" ||
           event.error === "service-not-allowed"
         ) {
+          // Surface the denied state so the UI can show recovery instructions.
+          // Do NOT auto-restart: a denied recognizer will just error again.
+          setMicPermission("denied");
+          pausedRef.current = true;
+          setListening(false);
           return;
         }
         if (event.error === "no-speech") return;
@@ -516,5 +561,9 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     toggleListening,
     startRecognition: startAllRecognition,
     stopRecognition: stopAllRecognition,
+    micPermission,
+    synthesisSupported,
+    speechSupported,
+    requestMicPermission,
   };
 }

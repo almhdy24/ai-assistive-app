@@ -149,6 +149,41 @@
   gap: 14px;
 }
 
+.home-support-warn {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 8px;
+  padding: 14px 16px;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  border-radius: 12px;
+  color: #b91c1c;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+}
+
+.home-support-warn p { margin: 0; }
+
+.home-support-btn {
+  align-self: center;
+  min-height: 44px;
+  padding: 10px 18px;
+  margin-top: 4px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.home-support-btn:active { transform: scale(0.97); }
+
 .home-voice-btn {
   position: relative;
   width: 92px;

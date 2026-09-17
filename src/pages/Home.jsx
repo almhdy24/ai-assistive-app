@@ -53,6 +53,9 @@ export default function Home({
   listening,
   speaking,
   speechSupported,
+  synthesisSupported = true,
+  micPermission = "unknown",
+  onRequestMicPermission,
   voiceCommand,
   lastCommandLanguage,
 }) {
@@ -123,8 +126,13 @@ export default function Home({
 
   let voiceState = "idle";
   if (!speechSupported) voiceState = "unsupported";
+  else if (micPermission === "denied") voiceState = "denied";
   else if (speaking) voiceState = "speaking";
   else if (listening) voiceState = "listening";
+
+  const showTtsWarning = !synthesisSupported;
+  const showMicWarning = speechSupported && micPermission === "denied";
+  const showSrWarning = !speechSupported;
 
   return (
     <div className="screen screen--home">
@@ -177,12 +185,42 @@ export default function Home({
             {voiceState === "speaking" && pick(t.speaking, lang)}
             {voiceState === "idle" && pick(t.voiceCommand, lang)}
             {voiceState === "unsupported" && pick(t.speechUnavailable, lang)}
+            {voiceState === "denied" && pick(t.microphonePermission, lang)}
           </p>
 
           {lastHeard && (
             <p className="home-heard" aria-live="off" aria-hidden="true">
               {lastHeard}
             </p>
+          )}
+
+          {(showMicWarning || showSrWarning || showTtsWarning) && (
+            <div
+              className="home-support-warn"
+              role="alert"
+              aria-live="assertive"
+            >
+              {showSrWarning && <p>{pick(t.speechUnavailable, lang)}</p>}
+              {showMicWarning && (
+                <>
+                  <p>{pick(t.microphonePermission, lang)}</p>
+                  <p>{pick(t.microphonePermissionAction, lang)}</p>
+                  {onRequestMicPermission && (
+                    <button
+                      type="button"
+                      className="home-support-btn"
+                      onClick={async () => {
+                        haptics.tap();
+                        await onRequestMicPermission();
+                      }}
+                    >
+                      {pick(t.microphoneRetry, lang)}
+                    </button>
+                  )}
+                </>
+              )}
+              {showTtsWarning && <p>{pick(t.synthesisUnavailable, lang)}</p>}
+            </div>
           )}
         </div>
 

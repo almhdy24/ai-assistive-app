@@ -16,7 +16,7 @@ import VoiceLanguageSelector from "./pages/VoiceLanguageSelector";
 import { translations, pick } from "./i18n/translations";
 import { parseVoiceCommand } from "./utils/voiceCommands";
 import { matchLanguageIntent } from "./utils/languageDetect";
-import { useDualSpeech, speechSupported } from "./hooks/useDualSpeech";
+import { useDualSpeech } from "./hooks/useDualSpeech";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { focusElement, announceStatus, SPEAK_PRIORITY } from "./utils/a11y";
 
@@ -75,6 +75,10 @@ export default function App() {
     toggleListening,
     lastCommandLanguage,
     startRecognition,
+    micPermission,
+    synthesisSupported,
+    speechSupported,
+    requestMicPermission,
   } = useDualSpeech({
     enabled: true,
     onCommand: handleCommand,
@@ -110,6 +114,37 @@ export default function App() {
     );
     return () => clearTimeout(timer);
   }, [primaryLanguage]);
+
+  /* Announce speech-stack support/permission issues once the user has a language */
+  const supportAnnouncedRef = useRef({ tts: false, sr: false, mic: false });
+  useEffect(() => {
+    if (!primaryLanguage) return;
+    const lang = primaryLanguage;
+    const flags = supportAnnouncedRef.current;
+    if (!synthesisSupported && !flags.tts) {
+      flags.tts = true;
+      // TTS is missing — nothing to speak with. Still push to the aria-live region.
+      announceStatus(pick(t.synthesisUnavailable, lang), "assertive");
+    }
+    if (!speechSupported && !flags.sr) {
+      flags.sr = true;
+      speakRef.current(pick(t.speechUnavailable, lang), {
+        priority: SPEAK_PRIORITY.CRITICAL,
+        language: lang,
+      });
+    }
+    if (speechSupported && micPermission === "denied" && !flags.mic) {
+      flags.mic = true;
+      speakRef.current(
+        `${pick(t.microphonePermission, lang)} ${pick(t.microphonePermissionAction, lang)}`,
+        { priority: SPEAK_PRIORITY.CRITICAL, language: lang }
+      );
+    }
+    if (micPermission === "granted") {
+      // Reset so a future denial re-announces
+      flags.mic = false;
+    }
+  }, [primaryLanguage, micPermission, synthesisSupported, speechSupported, t]);
 
   /* Network status — announce offline/online changes */
   useEffect(() => {
@@ -205,6 +240,9 @@ export default function App() {
                     listening={listening}
                     speaking={speaking}
                     speechSupported={speechSupported}
+                    synthesisSupported={synthesisSupported}
+                    micPermission={micPermission}
+                    onRequestMicPermission={requestMicPermission}
                     voiceCommand={voiceCommand}
                     lastCommandLanguage={lastCommandLanguage}
                   />
