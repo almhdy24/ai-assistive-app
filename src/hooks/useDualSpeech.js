@@ -300,7 +300,18 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     const gen = ++playingGenRef.current;
 
-    const voice = voicesRef.current[next.language];
+    // Re-pick the voice fresh every utterance. Cached SpeechSynthesisVoice
+    // objects go stale on Android Chrome (engine restart, audio focus change)
+    // and cause the engine to fall back to a distorted/loud default while
+    // simultaneously trying to load the real voice — resulting in "screaming".
+    const allVoices = window.speechSynthesis.getVoices();
+    const cached = voicesRef.current[next.language];
+    const voice =
+      cached && allVoices.some((v) => v.name === cached.name)
+        ? cached
+        : pickBestVoice(next.language);
+    if (voice) voicesRef.current[next.language] = voice;
+
     const { rate, pitch, volume } = getSpeakParams(next.language, voice);
 
     const utt = new SpeechSynthesisUtterance(next.text);
@@ -405,16 +416,20 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
       const lang = langOverride || (language ?? detectPrimaryLang(text, "ar"));
 
+      let needsCancelDelay = false;
+
       if (priority === SPEAK_PRIORITY.CRITICAL && isPlayingRef.current) {
         // Invalidate in-flight watchdog/callbacks before canceling
         playingGenRef.current++;
         window.speechSynthesis.cancel();
         isPlayingRef.current = false;
         queueRef.current = [];
+        needsCancelDelay = true;
       } else if (!isPlayingRef.current && queueRef.current.length === 0) {
         // Fresh session: cancel any stale browser utterances left from a previous
         // session (Android Chrome can resume old utterances after foregrounding)
         window.speechSynthesis.cancel();
+        needsCancelDelay = true;
       }
 
       const chunks = chunkForSpeech(text, lang);
@@ -422,7 +437,14 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         queueRef.current.push({ text: chunk, priority, language: lang })
       );
       queueRef.current.sort((a, b) => a.priority - b.priority);
-      playNext();
+
+      // Give Android's audio session time to release after cancel() before
+      // starting the next utterance — skipping this causes distorted playback
+      if (needsCancelDelay) {
+        setTimeout(playNext, 80);
+      } else {
+        playNext();
+      }
     },
     [language, playNext]
   );
