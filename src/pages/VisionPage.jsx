@@ -23,6 +23,17 @@ const MODE_BY_COMMAND = {
   navigation: "navigation",
 };
 
+// Route for each command type — used for cross-page navigation
+const ROUTE_BY_TYPE = {
+  "visual-question": "/object-detection",
+  "object-detection": "/object-detection",
+  right: "/object-detection",
+  left: "/object-detection",
+  "read-text": "/read-text",
+  "scene-description": "/scene-description",
+  navigation: "/navigation",
+};
+
 const ERROR_KEY_BY_CODE = {
   "camera-permission": "cameraPermission",
   "camera-not-found": "cameraNotFound",
@@ -210,9 +221,15 @@ export default function VisionPage({
     }
 
     const requestedMode = MODE_BY_COMMAND[type];
-    if (requestedMode && requestedMode === mode && !loading && ready) {
-      setResultLanguage(cmdLanguage);
-      runAnalyze();
+    if (requestedMode) {
+      if (requestedMode === mode && !loading && ready) {
+        setResultLanguage(cmdLanguage);
+        runAnalyze();
+      } else if (requestedMode !== mode && ROUTE_BY_TYPE[type]) {
+        // Command targets a different page — navigate there instead of ignoring it
+        cancelSpeaking();
+        navigate(ROUTE_BY_TYPE[type]);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceCommand]);
