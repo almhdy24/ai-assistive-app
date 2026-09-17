@@ -125,15 +125,22 @@ export default function App() {
     const onStop = () => stopAll();
     const onCancel = () => stopSpeakingRef.current();
 
+    const onSetLang = (e) => {
+      const { language } = e.detail ?? {};
+      if (language === "ar" || language === "en") handleSelectLanguage(language);
+    };
+
     window.addEventListener("ai-assistive:speak", onSpeak);
     window.addEventListener("ai-assistive:stop-speak", onStop);
     window.addEventListener("ai-assistive:cancel-speak", onCancel);
+    window.addEventListener("ai-assistive:set-language", onSetLang);
     return () => {
       window.removeEventListener("ai-assistive:speak", onSpeak);
       window.removeEventListener("ai-assistive:stop-speak", onStop);
       window.removeEventListener("ai-assistive:cancel-speak", onCancel);
+      window.removeEventListener("ai-assistive:set-language", onSetLang);
     };
-  }, [stopAll]);
+  }, [stopAll, handleSelectLanguage]);
 
   const handleSelectLanguage = useCallback((lang) => {
     try {

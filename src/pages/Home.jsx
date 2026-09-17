@@ -63,8 +63,7 @@ export default function Home({
 
   function switchLanguage(next = lang === "ar" ? "en" : "ar") {
     haptics.tap();
-    try { localStorage.setItem("language", next); } catch { /* ignore */ }
-    window.location.reload();
+    window.dispatchEvent(new CustomEvent("ai-assistive:set-language", { detail: { language: next } }));
   }
 
   const [lastHeard, setLastHeard] = useState(null);
