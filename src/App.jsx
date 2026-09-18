@@ -75,6 +75,7 @@ export default function App() {
     toggleListening,
     lastCommandLanguage,
     startRecognition,
+    warmUpTts,
     micPermission,
     synthesisSupported,
     speechSupported,
@@ -82,11 +83,30 @@ export default function App() {
   } = useDualSpeech({
     enabled: true,
     onCommand: handleCommand,
-    // null during language-selection so both recognizers run for detection
+    // null during initial selection — hook uses ar-SA recognizer as default
     language: primaryLanguage,
   });
 
   useWakeLock(true);
+
+  /* Warm up the TTS engine on the first user gesture.
+     Android and iOS TTS engines cold-start on their first speak() call — the
+     first audible utterance can be delayed, clipped, or distorted. A muted
+     primer utterance triggered from a user gesture avoids that. */
+  useEffect(() => {
+    if (!synthesisSupported) return;
+    const onFirstGesture = () => {
+      warmUpTts();
+      window.removeEventListener("pointerdown", onFirstGesture, true);
+      window.removeEventListener("keydown", onFirstGesture, true);
+    };
+    window.addEventListener("pointerdown", onFirstGesture, true);
+    window.addEventListener("keydown", onFirstGesture, true);
+    return () => {
+      window.removeEventListener("pointerdown", onFirstGesture, true);
+      window.removeEventListener("keydown", onFirstGesture, true);
+    };
+  }, [warmUpTts, synthesisSupported]);
 
   /* Bridge window events → speech engine */
   const speakRef = useRef(speak);

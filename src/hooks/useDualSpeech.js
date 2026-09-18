@@ -25,29 +25,17 @@ const IS_ANDROID =
   typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
 
 const LANG_CODE = { ar: "ar-SA", en: "en-US" };
-const ALL_LANGS = ["ar-SA", "en-US"];
-
-const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F]/;
-const LATIN_RE = /[A-Za-z]/;
-
-function scriptOf(text) {
-  const hasAr = ARABIC_RE.test(text);
-  const hasEn = LATIN_RE.test(text);
-  if (hasAr && !hasEn) return "ar";
-  if (hasEn && !hasAr) return "en";
-  if (hasAr && hasEn) {
-    const ar = (text.match(ARABIC_RE) || []).length;
-    const en = (text.match(LATIN_RE) || []).length;
-    return ar >= en ? "ar" : "en";
-  }
-  return null;
-}
+// When no language is locked (initial VoiceLanguageSelector screen), default the
+// recognizer to Arabic. Users still have the on-screen AR/EN tap buttons.
+const DEFAULT_REC_LANG = "ar-SA";
 
 /**
+ * Combined speech-recognition + TTS hook.
+ *
  * @param {object} opts
  * @param {boolean}  opts.enabled
  * @param {function} opts.onCommand   - called with (transcript, language)
- * @param {string|null} opts.language - "ar" | "en" | null (null = detection mode)
+ * @param {string|null} opts.language - "ar" | "en" | null (null → default Arabic recognizer)
  */
 export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   const [listening, setListening] = useState(false);
@@ -56,26 +44,30 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   // "granted" | "denied" | "prompt" | "unknown"
   const [micPermission, setMicPermission] = useState("unknown");
 
-  const recognizersRef = useRef({});
-  const restartTimersRef = useRef({});
+  // Single-recognizer refs — the hook always runs at most one recognizer at a
+  // time. Running dual recognizers doubles the mic contention on Android
+  // vendor ROMs (e.g. Huawei EMUI), which colllides with TTS output.
+  const recognizerRef = useRef(null);
+  const restartTimerRef = useRef(null);
+  const commandRestartTimerRef = useRef(null);
   const pausedRef = useRef(false);
   const onCommandRef = useRef(onCommand);
-  // Tracks the post-command 1600ms restart timer so language changes can cancel it
-  const commandRestartTimerRef = useRef(null);
 
-  // Factory stored in ref so startAllRecognition/scheduleRestart can always
-  // create fresh instances (Android Chrome can't reliably restart a stopped recognizer)
+  // Factory stored in ref so timers/callbacks can always create fresh instances
+  // (Android Chrome can't reliably restart a stopped recognizer).
   const makeRecognizerRef = useRef(null);
 
   const queueRef = useRef([]);
   const isPlayingRef = useRef(false);
   const playingGenRef = useRef(0);
+  const ttsWarmedRef = useRef(false);
 
   const voicesRef = useRef({ ar: null, en: null });
 
-  const activeLangs = language ? [LANG_CODE[language]] : ALL_LANGS;
-  const activeLangsRef = useRef(activeLangs);
-  activeLangsRef.current = activeLangs;
+  // Recognizer BCP-47 code — falls back to Arabic when no locked language.
+  const recLang = language ? LANG_CODE[language] : DEFAULT_REC_LANG;
+  const recLangRef = useRef(recLang);
+  recLangRef.current = recLang;
 
   useEffect(() => {
     onCommandRef.current = onCommand;
@@ -86,7 +78,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   }, [language]);
 
   // Proactive permission probe — some browsers expose the current state without
-  // triggering a prompt. If denied, we can surface it before rec.start() fails silently.
+  // triggering a prompt. If denied, we surface it before rec.start() fails silently.
   useEffect(() => {
     if (!speechSupported) return;
     if (typeof navigator === "undefined" || !navigator.permissions?.query) return;
@@ -129,8 +121,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     };
     refresh();
     window.speechSynthesis.addEventListener?.("voiceschanged", refresh);
-    // Safety net: on Android Chrome, voiceschanged can fire before the listener is
-    // added (voices already cached). Retry once to pick them up.
+    // Safety net: on Android Chrome, voiceschanged can fire before the listener
+    // is added (voices already cached). Retry once to pick them up.
     const t = setTimeout(refresh, 500);
     return () => {
       window.speechSynthesis.removeEventListener?.("voiceschanged", refresh);
@@ -142,124 +134,80 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
   /* Recognition                                                      */
   /* ---------------------------------------------------------------- */
 
-  const scheduleRestart = useCallback((lang) => {
-    if (!activeLangsRef.current.includes(lang)) return;
-    clearTimeout(restartTimersRef.current[lang]);
-    restartTimersRef.current[lang] = setTimeout(() => {
+  const scheduleRestart = useCallback(() => {
+    clearTimeout(restartTimerRef.current);
+    restartTimerRef.current = setTimeout(() => {
       if (pausedRef.current) return;
       const make = makeRecognizerRef.current;
-      if (make) {
-        try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
-        const rec = make(lang);
-        recognizersRef.current[lang] = rec;
-        try { rec.start(); } catch { /* ignore */ }
-      } else {
-        try { recognizersRef.current[lang]?.start(); } catch { /* ignore */ }
-      }
+      if (!make) return;
+      try { recognizerRef.current?.abort(); } catch { /* ignore */ }
+      const rec = make(recLangRef.current);
+      recognizerRef.current = rec;
+      try { rec.start(); } catch { /* ignore */ }
     }, 450);
   }, []);
 
-  const stopAllRecognition = useCallback(() => {
+  const stopRecognition = useCallback(() => {
     pausedRef.current = true;
-    ALL_LANGS.forEach((lang) => {
-      clearTimeout(restartTimersRef.current[lang]);
-      // .abort() releases the mic immediately; .stop() waits for a final
-      // result which on Huawei EMUI keeps the audio session hot long enough
-      // to collide with TTS output.
-      try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
-    });
+    clearTimeout(restartTimerRef.current);
+    clearTimeout(commandRestartTimerRef.current);
+    // .abort() releases the mic immediately; .stop() waits for a final result
+    // which on Huawei EMUI keeps the audio session hot long enough to collide
+    // with TTS output.
+    try { recognizerRef.current?.abort(); } catch { /* ignore */ }
     setListening(false);
   }, []);
 
-  // Use the ref (not closure) so stale advance()/timer closures created before a
-  // language change still start the CURRENT-language recognizer, not the old one.
-  const startAllRecognition = useCallback(() => {
+  const startRecognition = useCallback(() => {
     pausedRef.current = false;
-    activeLangsRef.current.forEach((lang) => {
-      const make = makeRecognizerRef.current;
-      if (make) {
-        // Always create a fresh instance — Android Chrome can't reliably restart
-        // a SpeechRecognition object that was previously .stop()ed
-        try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
-        const rec = make(lang);
-        recognizersRef.current[lang] = rec;
-        try { rec.start(); } catch { /* ignore */ }
-      } else {
-        try { recognizersRef.current[lang]?.start(); } catch { /* ignore */ }
-      }
-    });
+    clearTimeout(restartTimerRef.current);
+    const make = makeRecognizerRef.current;
+    if (!make) return;
+    // Always create a fresh instance — Android Chrome can't reliably restart
+    // a SpeechRecognition object that was previously .stop()ed.
+    try { recognizerRef.current?.abort(); } catch { /* ignore */ }
+    const rec = make(recLangRef.current);
+    recognizerRef.current = rec;
+    try { rec.start(); } catch { /* ignore */ }
   }, []);
 
-  const pendingRef = useRef({});
+  const pendingRef = useRef(null);
   const flushTimerRef = useRef(null);
 
   const flushPending = useCallback(() => {
-    const pending = pendingRef.current;
-    pendingRef.current = {};
+    const p = pendingRef.current;
+    pendingRef.current = null;
+    if (!p?.transcript) return;
 
-    const candidates = Object.entries(pending);
-    if (!candidates.length) return;
-
-    let transcript;
-    let detected;
-
-    if (language) {
-      const entry = pending[LANG_CODE[language]];
-      if (!entry?.transcript) return;
-      transcript = entry.transcript;
-      detected = language;
-    } else {
-      const scored = candidates.map(([lang, { transcript: t, confidence }]) => {
-        const script = scriptOf(t);
-        const scriptMatches =
-          (lang.startsWith("ar") && script === "ar") ||
-          (lang.startsWith("en") && script === "en");
-        const scriptRatio =
-          script === "ar"
-            ? (t.match(ARABIC_RE) || []).length / t.length
-            : (t.match(LATIN_RE) || []).length / t.length;
-        return {
-          lang: lang.startsWith("ar") ? "ar" : "en",
-          transcript: t,
-          score:
-            (scriptMatches ? 0.5 : 0) +
-            scriptRatio * 0.35 +
-            (confidence || 0.5) * 0.15,
-        };
-      });
-
-      scored.sort((a, b) => b.score - a.score);
-      const winner = scored[0];
-      if (!winner?.transcript) return;
-      transcript = winner.transcript;
-      detected = detectPrimaryLang(winner.transcript, winner.lang);
-    }
+    // Trust the recognizer's language when locked; fall back to script-based
+    // detection when unlocked (VoiceLanguageSelector uses matchLanguageIntent
+    // downstream on the transcript, so this "detected" value is advisory).
+    const detected = language || detectPrimaryLang(p.transcript, "ar");
 
     pausedRef.current = true;
-    ALL_LANGS.forEach((l) => {
-      clearTimeout(restartTimersRef.current[l]);
-      try { recognizersRef.current[l]?.abort(); } catch { /* ignore */ }
-    });
+    clearTimeout(restartTimerRef.current);
+    try { recognizerRef.current?.abort(); } catch { /* ignore */ }
     setListening(false);
 
     setLastCommandLanguage(detected);
-    onCommandRef.current?.(transcript, detected);
+    onCommandRef.current?.(p.transcript, detected);
 
+    clearTimeout(commandRestartTimerRef.current);
     commandRestartTimerRef.current = setTimeout(() => {
       // Skip if TTS is active — advance() will restart recognition after last chunk
       if (!isPlayingRef.current) {
         pausedRef.current = false;
-        startAllRecognition();
+        startRecognition();
       }
     }, 1600);
-  }, [language, startAllRecognition]);
+  }, [language, startRecognition]);
 
   const scheduleFlush = useCallback(() => {
     clearTimeout(flushTimerRef.current);
     flushTimerRef.current = setTimeout(flushPending, 600);
   }, [flushPending]);
 
-  // Rebuild recognizers whenever enabled or language changes
+  // Rebuild recognizer whenever enabled or language changes
   useEffect(() => {
     if (!speechSupported || !enabled) {
       makeRecognizerRef.current = null;
@@ -270,16 +218,16 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       const rec = new Ctor();
       rec.continuous = true;
       rec.interimResults = false;
-      rec.maxAlternatives = language ? 3 : 5;
+      rec.maxAlternatives = 3;
       rec.lang = lang;
 
-      // Ignore onend/onerror on recognizer instances we've already replaced.
-      // startAllRecognition and scheduleRestart abort the current recognizer
-      // before creating a new one; the aborted instance's onend/onerror fires
+      // Ignore onstart/onend/onerror on instances we've already replaced.
+      // startRecognition and scheduleRestart abort the current recognizer
+      // before creating a new one; the aborted instance's handlers fire
       // asynchronously — if we don't check "am I still the current recognizer?"
       // we schedule a restart against the freshly-started recognizer, which
       // aborts it, which fires another stale onend, and so on — infinite loop.
-      const isCurrent = () => recognizersRef.current[lang] === rec;
+      const isCurrent = () => recognizerRef.current === rec;
 
       rec.onstart = () => {
         // Reaching onstart means the OS granted mic access to this recognizer
@@ -288,7 +236,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       };
       rec.onend = () => {
         if (!isCurrent()) return;
-        if (!pausedRef.current) scheduleRestart(lang);
+        if (!pausedRef.current) scheduleRestart();
       };
       rec.onerror = (event) => {
         if (!isCurrent()) return;
@@ -304,8 +252,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
           return;
         }
         if (event.error === "no-speech") return;
+        // .abort() fires onerror with "aborted"/"canceled" — deliberate; ignore
+        // so we don't schedule a redundant restart on top of the caller's flow.
         if (event.error === "aborted" || event.error === "canceled") return;
-        scheduleRestart(lang);
+        scheduleRestart();
       };
       rec.onresult = (event) => {
         const last = event.results[event.results.length - 1];
@@ -316,16 +266,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
           const t = alt.transcript?.trim();
           if (!t) continue;
 
-          if (!language) {
-            const script = scriptOf(t);
-            const expected = lang.startsWith("ar") ? "ar" : "en";
-            if (script && script !== expected) continue;
-          }
-
           const confidence = alt.confidence || 0;
-          const prev = pendingRef.current[lang];
+          const prev = pendingRef.current;
           if (!prev || confidence > prev.confidence) {
-            pendingRef.current[lang] = { transcript: t, confidence };
+            pendingRef.current = { transcript: t, confidence };
           }
         }
 
@@ -338,37 +282,60 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     makeRecognizerRef.current = makeRecognizer;
 
     // Only reset paused if TTS is idle — if TTS is playing, advance() will call
-    // startAllRecognition() when done, which properly resets pausedRef then.
+    // startRecognition() when done, which properly resets pausedRef then.
     if (!isPlayingRef.current) {
       pausedRef.current = false;
     }
-    activeLangs.forEach((lang) => {
-      const rec = makeRecognizer(lang);
-      recognizersRef.current[lang] = rec;
-      try { rec.start(); } catch { /* ignore */ }
-    });
+    const rec = makeRecognizer(recLang);
+    recognizerRef.current = rec;
+    try { rec.start(); } catch { /* ignore */ }
 
     return () => {
       makeRecognizerRef.current = null;
       pausedRef.current = true;
-      // Cancel the post-command restart timer — if language is changing, the
-      // stale timer would call the old-language startAllRecognition and start
-      // the wrong recognizer, which can echo-loop into TTS ("screaming")
+      // Cancel any pending timers — a stale timer would call the old-language
+      // startRecognition and start the wrong recognizer, which can echo-loop
+      // into TTS ("screaming").
       clearTimeout(commandRestartTimerRef.current);
       clearTimeout(flushTimerRef.current);
-      ALL_LANGS.forEach((lang) => {
-        clearTimeout(restartTimersRef.current[lang]);
-        try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
-      });
-      recognizersRef.current = {};
+      clearTimeout(restartTimerRef.current);
+      try { recognizerRef.current?.abort(); } catch { /* ignore */ }
+      recognizerRef.current = null;
     };
-    // language change restarts recognizers with the right set
+    // language change restarts the recognizer with the new lang
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, language, scheduleRestart, scheduleFlush]);
+  }, [enabled, recLang, scheduleRestart, scheduleFlush]);
 
   /* ---------------------------------------------------------------- */
   /* Synthesis                                                        */
   /* ---------------------------------------------------------------- */
+
+  /**
+   * Fires a silent priming utterance to unlock the TTS engine. Many Android
+   * TTS engines cold-start on the first speak() call and the first audible
+   * utterance is delayed, clipped, or distorted. A muted primer avoids that.
+   *
+   * MUST be called from within a user-gesture handler on browsers that gate
+   * speech synthesis behind a gesture (iOS Safari, some Android WebViews).
+   * Idempotent — subsequent calls are no-ops for the session.
+   */
+  const warmUpTts = useCallback(() => {
+    if (!synthesisSupported) return;
+    if (ttsWarmedRef.current) return;
+    ttsWarmedRef.current = true;
+    try {
+      const primer = new SpeechSynthesisUtterance(" ");
+      primer.volume = 0;
+      primer.rate = 1;
+      primer.pitch = 1;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(primer);
+    } catch {
+      // A warm-up failure should never break the app. Reset the gate so a
+      // later attempt can try again.
+      ttsWarmedRef.current = false;
+    }
+  }, []);
 
   const playNext = useCallback(() => {
     if (isPlayingRef.current) return;
@@ -376,10 +343,10 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     if (!next) return;
 
     isPlayingRef.current = true;
-    // Always abort recognizers before speaking — even if pausedRef is true,
-    // Huawei may still be holding the mic from a recognizer that was previously
-    // asked to stop. Idempotent abort() is cheap and forces mic release.
-    stopAllRecognition();
+    // Always abort the recognizer before speaking — even if pausedRef is true,
+    // Huawei may still be holding the mic. Idempotent abort() is cheap and
+    // forces mic release before the TTS output channel opens.
+    stopRecognition();
     setSpeaking(true);
 
     const gen = ++playingGenRef.current;
@@ -405,8 +372,8 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     const utt = new SpeechSynthesisUtterance(next.text);
     if (voice) utt.voice = voice;
     utt.lang = next.language === "ar" ? "ar-SA" : "en-US";
-    // Android TTS engines are sensitive to non-default pitch — force 1.0
     utt.rate = rate;
+    // Android TTS engines are sensitive to non-default pitch — force 1.0
     utt.pitch = IS_ANDROID ? 1.0 : pitch;
     utt.volume = volume;
 
@@ -435,7 +402,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       } else {
         setSpeaking(false);
         pausedRef.current = false;
-        startAllRecognition();
+        startRecognition();
       }
     };
 
@@ -463,8 +430,6 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       if (gen !== playingGenRef.current) return; // stale
       if (watchdog) clearInterval(watchdog);
       // Treat every error path through advance() so the idempotent guard applies.
-      // interrupted/canceled: keep queue draining if we still have chunks.
-      // any other error: skip the chunk and continue with the rest.
       if (advanced) return;
       advanced = true;
       isPlayingRef.current = false;
@@ -473,24 +438,20 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
         setTimeout(playNext, nextGap);
       } else {
         setSpeaking(false);
-        // stopSpeaking (cancel-speak) leaves pausedRef false → restart recognition
-        // stopAll (stop-speak) leaves pausedRef true → stay paused
         if (!pausedRef.current) {
           pausedRef.current = false;
-          startAllRecognition();
+          startRecognition();
         }
       }
     };
 
     // Give the Huawei audio driver time to actually release the mic after
     // recognizer .abort() before speak() opens the TTS output channel.
-    // Dual-language recognition doubles mic contention vs the standalone
-    // reference code that ran a single recognizer.
     setTimeout(() => {
       if (gen !== playingGenRef.current) return; // superseded before we got a chance
       try { window.speechSynthesis.speak(utt); } catch { /* ignore */ }
     }, 250);
-  }, [startAllRecognition, stopAllRecognition]);
+  }, [startRecognition, stopRecognition]);
 
   const speak = useCallback(
     (text, { priority = SPEAK_PRIORITY.NORMAL, language: langOverride } = {}) => {
@@ -503,16 +464,13 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       if (priority === SPEAK_PRIORITY.CRITICAL && isPlayingRef.current) {
         // Invalidate in-flight watchdog/callbacks before canceling
         playingGenRef.current++;
-        window.speechSynthesis.cancel();
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
         isPlayingRef.current = false;
         queueRef.current = [];
         needsCancelDelay = true;
       } else if (!isPlayingRef.current && queueRef.current.length === 0) {
-        // Match known-good standalone code: unconditional cancel() before every
-        // speak(). The idle-check was masking latent Huawei TTS-engine state
-        // that is not visible from the JS event stream. Keep no cancel-delay —
-        // the old code runs cancel + speak synchronously and works on the same
-        // Huawei device.
+        // Unconditional cancel before starting a fresh queue — clears any
+        // stale synthesis state that may not be visible from the JS event stream.
         try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
       }
 
@@ -523,7 +481,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       queueRef.current.sort((a, b) => a.priority - b.priority);
 
       // Give the audio session time to release after cancel() before starting
-      // the next utterance — Android vendor ROMs need more time than desktop
+      // the next utterance — Android vendor ROMs need more time than desktop.
       if (needsCancelDelay) {
         setTimeout(playNext, IS_ANDROID ? 260 : 80);
       } else {
@@ -538,30 +496,54 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     queueRef.current = [];
     isPlayingRef.current = false;
     setSpeaking(false);
-    if (synthesisSupported) window.speechSynthesis.cancel();
+    if (synthesisSupported) {
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+    }
     pausedRef.current = false;
-    startAllRecognition();
-  }, [startAllRecognition]);
+    startRecognition();
+  }, [startRecognition]);
 
   const stopAll = useCallback(() => {
     playingGenRef.current++;
     queueRef.current = [];
     isPlayingRef.current = false;
     setSpeaking(false);
-    if (synthesisSupported) window.speechSynthesis.cancel();
-
+    if (synthesisSupported) {
+      try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+    }
     pausedRef.current = true;
-    ALL_LANGS.forEach((lang) => {
-      clearTimeout(restartTimersRef.current[lang]);
-      try { recognizersRef.current[lang]?.abort(); } catch { /* ignore */ }
-    });
+    clearTimeout(restartTimerRef.current);
+    clearTimeout(commandRestartTimerRef.current);
+    try { recognizerRef.current?.abort(); } catch { /* ignore */ }
     setListening(false);
   }, []);
 
+  /**
+   * Voice-button handler.
+   *
+   * - If TTS is currently speaking: barge in — cancel the utterance queue and
+   *   start listening immediately. Users tapping the mic during an assistant
+   *   response are signaling "I want to talk now"; making them wait feels broken.
+   * - Otherwise: toggle between listening and idle.
+   */
   const toggleListening = useCallback(() => {
-    if (listening) stopAllRecognition();
-    else startAllRecognition();
-  }, [listening, startAllRecognition, stopAllRecognition]);
+    if (isPlayingRef.current || speaking) {
+      // Barge-in: cancel TTS state, then start listening in the same tick.
+      playingGenRef.current++;
+      queueRef.current = [];
+      isPlayingRef.current = false;
+      setSpeaking(false);
+      if (synthesisSupported) {
+        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+      }
+      // Clear any post-command restart timer so it doesn't stomp our fresh start
+      clearTimeout(commandRestartTimerRef.current);
+      startRecognition();
+      return;
+    }
+    if (listening) stopRecognition();
+    else startRecognition();
+  }, [listening, speaking, startRecognition, stopRecognition]);
 
   return {
     listening,
@@ -571,8 +553,9 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     stopSpeaking,
     stopAll,
     toggleListening,
-    startRecognition: startAllRecognition,
-    stopRecognition: stopAllRecognition,
+    warmUpTts,
+    startRecognition,
+    stopRecognition,
     micPermission,
     synthesisSupported,
     speechSupported,

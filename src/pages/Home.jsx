@@ -162,7 +162,7 @@ export default function Home({
               haptics.tap();
               if (typeof onVoiceCommand === "function") onVoiceCommand();
             }}
-            disabled={!speechSupported || speaking}
+            disabled={!speechSupported}
             aria-label={
               voiceState === "listening"
                 ? pick(t.listening, lang)
