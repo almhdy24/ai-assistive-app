@@ -216,7 +216,12 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
 
     const makeRecognizer = (lang) => {
       const rec = new Ctor();
-      rec.continuous = true;
+      // continuous=false: the recognizer ends after a single final result.
+      // This matches the known-good pattern — we restart from onend when idle,
+      // which is more reliable on Android Chrome than continuous=true (some
+      // vendor ROMs stop dispatching results after the first utterance in
+      // continuous mode).
+      rec.continuous = false;
       rec.interimResults = false;
       rec.maxAlternatives = 3;
       rec.lang = lang;
@@ -236,7 +241,18 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       };
       rec.onend = () => {
         if (!isCurrent()) return;
-        if (!pausedRef.current) scheduleRestart();
+        // continuous=false ends immediately after a final result. If we have
+        // a queued transcript, deliver it now instead of waiting out the 600ms
+        // debounce — the recognizer has already committed, no more results
+        // will arrive on this instance.
+        if (pendingRef.current) {
+          clearTimeout(flushTimerRef.current);
+          flushPending();
+          return;
+        }
+        // Only auto-restart when we're idle. If TTS is playing or the command
+        // flow is running, playNext/advance/flushPending own the restart.
+        if (!pausedRef.current && !isPlayingRef.current) scheduleRestart();
       };
       rec.onerror = (event) => {
         if (!isCurrent()) return;
@@ -304,7 +320,7 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
     };
     // language change restarts the recognizer with the new lang
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, recLang, scheduleRestart, scheduleFlush]);
+  }, [enabled, recLang, scheduleRestart, scheduleFlush, flushPending]);
 
   /* ---------------------------------------------------------------- */
   /* Synthesis                                                        */
