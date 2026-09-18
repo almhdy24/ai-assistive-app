@@ -422,22 +422,46 @@ export function useDualSpeech({ enabled = true, onCommand, language = null }) {
       }
     };
 
-    // Minimal watchdog: ONLY the hard 13-second cap (Android's 15s TTS budget
-    // silently cuts audio; we cancel before that so onerror("canceled") can
-    // continue the queue). We do NOT force-advance on !speaking and do NOT
-    // call ss.resume() — those paths cause overlapping utterances on Huawei
-    // EMUI, since the engine transiently flips paused/speaking between
-    // phonemes, and forcing resume/advance schedules a duplicate playback.
+    // Watchdog: detect silent-death AND enforce Android's ~15s TTS budget.
+    // Android Chrome sometimes stops audio without firing onend — waiting the
+    // full 13s hard cap for each chunk = 13s of silence between sentences,
+    // which sounds like "TTS keeps stopping randomly".
+    //
+    // Stall detection uses HYSTERESIS: we require 3 consecutive samples of
+    // (!speaking && !pending) over 1.5s before treating it as dead. Huawei
+    // EMUI transiently flips speaking=false between phonemes for a single
+    // sample — the 3-sample threshold filters that out cleanly, so we get
+    // the reliability of stall detection without the Huawei overlap bug.
     let watchdog = null;
+    let stallCount = 0;
     const startTime = Date.now();
+    const graceMs = IS_ANDROID ? 1200 : 800;
     watchdog = setInterval(() => {
       if (gen !== playingGenRef.current) {
         clearInterval(watchdog);
         return;
       }
-      if (Date.now() - startTime > 13000) {
+      const elapsed = Date.now() - startTime;
+      // Grace period lets the engine actually open the audio channel.
+      if (elapsed < graceMs) return;
+
+      const ss = window.speechSynthesis;
+      if (!ss.speaking && !ss.pending) {
+        stallCount++;
+        // 3 * 500ms = 1.5s of confirmed silence → engine has stopped early.
+        if (stallCount >= 3) {
+          clearInterval(watchdog);
+          advance();
+          return;
+        }
+      } else {
+        stallCount = 0;
+      }
+
+      // Hard cap for stuck utterances that keep reporting speaking=true forever.
+      if (elapsed > 12000) {
         clearInterval(watchdog);
-        try { window.speechSynthesis.cancel(); } catch { /* ignore */ }
+        try { ss.cancel(); } catch { /* ignore */ }
       }
     }, 500);
 
