@@ -3,7 +3,7 @@ import { getVisionPrompt } from "./visionPrompts";
 
 const API_KEY = import.meta.env.VITE_GROQ_API_KEY;
 const BASE = "https://api.groq.com/openai/v1/chat/completions";
-const MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const MODEL = "qwen/qwen3.8-27b";
 
 export function hasGroqKey() {
   return Boolean(API_KEY);

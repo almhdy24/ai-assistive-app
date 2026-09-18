@@ -235,6 +235,11 @@ export async function analyzeImage({
             if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
               throw groqErr;
             }
+            console.warn(
+              "Groq fallback failed:",
+              groqErr.response?.status,
+              groqErr.response?.data || groqErr.message
+            );
             // Groq also failed — surface the original Gemini error
           }
         }
