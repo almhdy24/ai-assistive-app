@@ -1,5 +1,6 @@
 import axios from "axios";
 import { getVisionPrompt } from "./visionPrompts";
+import { analyzeImageWithGroq, hasGroqKey } from "./groq";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -203,6 +204,7 @@ export async function analyzeImage({
 
       if (err.response) {
         const status = err.response.status;
+        const bodyStatus = err.response.data?.error?.status;
         lastStatus = status;
 
         if (status === 404) {
@@ -214,6 +216,27 @@ export async function analyzeImage({
         if (status >= 500) {
           // Transient server error — try next model after retry already failed
           continue;
+        }
+
+        // Gemini quota/rate-limit → fall back to Groq Vision if configured
+        if (
+          (status === 429 || bodyStatus === "RESOURCE_EXHAUSTED") &&
+          hasGroqKey()
+        ) {
+          try {
+            const groqText = await analyzeImageWithGroq({
+              image: base64,
+              mode,
+              language,
+              signal,
+            });
+            if (groqText) return groqText;
+          } catch (groqErr) {
+            if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
+              throw groqErr;
+            }
+            // Groq also failed — surface the original Gemini error
+          }
         }
 
         // 401, 403, 429, other 4xx — stop immediately
