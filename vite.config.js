@@ -14,12 +14,12 @@ export default defineConfig({
         "offline.html",
       ],
       manifest: {
-        name: "المساعد البصري الذكي",
-        short_name: "مساعد بصري",
+        name: "AI Assistive",
+        short_name: "AI Assistive",
         description:
           "مساعد بصري بالذكاء الاصطناعي للمكفوفين: التعرف على الأشياء، قراءة النصوص، وصف المكان، والمساعدة في التنقل.",
-        lang: "ar",
-        dir: "rtl",
+        lang: "en",
+        dir: "ltr",
         start_url: "/",
         scope: "/",
         display: "standalone",

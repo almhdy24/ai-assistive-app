@@ -1,9 +1,9 @@
 {
-  "name": "المساعد البصري الذكي",
-  "short_name": "مساعد بصري",
+  "name": "AI Assistive",
+  "short_name": "AI Assistive",
   "description": "مساعد بصري بالذكاء الاصطناعي للمكفوفين.",
-  "lang": "ar",
-  "dir": "rtl",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
