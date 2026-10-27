@@ -6,6 +6,7 @@ const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 const REQUEST_TIMEOUT_MS = 25000;
 const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+const RESULT_CACHE_TTL_MS = 60 * 1000;
 
 const PREFERRED_MODELS = [
   "gemini-2.5-flash",
@@ -21,6 +22,7 @@ const PREFERRED_MODELS = [
 let cachedModel = null;
 let cachedModelAt = 0;
 const resultCache = new Map();
+const inFlightRequests = new Map();
 
 function debugGemini(label, details) {
   if (import.meta.env.DEV) {
@@ -30,6 +32,15 @@ function debugGemini(label, details) {
 
 function getModelCacheKey(image, mode, language) {
   return `${mode}:${language}:${image.slice(-256)}`;
+}
+
+function pruneResultCache() {
+  const now = Date.now();
+  for (const [key, value] of resultCache.entries()) {
+    if (now - value.cachedAt > RESULT_CACHE_TTL_MS) {
+      resultCache.delete(key);
+    }
+  }
 }
 
 async function discoverModel(signal) {
@@ -201,303 +212,117 @@ export async function analyzeImage({
   const base64 = image.includes(",") ? image.split(",")[1] : image;
   const prompt = getVisionPrompt(mode, language);
   const cacheKey = getModelCacheKey(base64, mode, language);
+  pruneResultCache();
 
-  if (resultCache.has(cacheKey)) {
-    return resultCache.get(cacheKey);
+  if (inFlightRequests.has(cacheKey)) {
+    return inFlightRequests.get(cacheKey);
   }
 
-  const model = await getPreferredModel(signal);
-  const queue = [model, ...PREFERRED_MODELS.filter((m) => m !== model)];
-  let lastStatus = 404;
+  const cached = resultCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < RESULT_CACHE_TTL_MS) {
+    return cached.value;
+  }
 
-  for (const candidate of queue) {
-    try {
-      const text = await callModelWithRetry(candidate, base64, prompt, signal);
+  const requestPromise = (async () => {
+    const model = await getPreferredModel(signal);
+    const queue = [model, ...PREFERRED_MODELS.filter((m) => m !== model)];
+    let lastStatus = 404;
 
-      if (text) {
-        resultCache.set(cacheKey, text);
-        cachedModel = candidate;
-        cachedModelAt = Date.now();
-        return text;
-      }
+    for (const candidate of queue) {
+      try {
+        const text = await callModelWithRetry(candidate, base64, prompt, signal);
 
-      throw new Error(
-        language === "ar"
-          ? "لم يُرجع الموديل أي نتيجة."
-          : "Model returned no result."
-      );
-    } catch (err) {
-      if (axios.isCancel(err) || err.name === "CanceledError") throw err;
+        if (text) {
+          resultCache.set(cacheKey, { value: text, cachedAt: Date.now() });
+          cachedModel = candidate;
+          cachedModelAt = Date.now();
+          return text;
+        }
 
-      if (err.response) {
-        const status = err.response.status;
-        const bodyStatus = err.response.data?.error?.status;
-        lastStatus = status;
+        throw new Error(
+          language === "ar"
+            ? "لم يُرجع الموديل أي نتيجة."
+            : "Model returned no result."
+        );
+      } catch (err) {
+        if (axios.isCancel(err) || err.name === "CanceledError") throw err;
 
-        debugGemini("provider error", {
-          status,
-          model: candidate,
-          error: err.response?.data,
-        });
+        if (err.response) {
+          const status = err.response.status;
+          const bodyStatus = err.response.data?.error?.status;
+          lastStatus = status;
 
-        if (status === 400) {
-          console.error("Gemini rejected the request:", {
+          debugGemini("provider error", {
             status,
             model: candidate,
             error: err.response?.data,
-            payloadSize: base64.length,
           });
+
+          if (status === 400) {
+            console.error("Gemini rejected the request:", {
+              status,
+              model: candidate,
+              error: err.response?.data,
+              payloadSize: base64.length,
+            });
+            throw httpError(status, language);
+          }
+
+          if (status === 404) {
+            if (cachedModel === candidate) {
+              cachedModel = null;
+              cachedModelAt = 0;
+            }
+            continue;
+          }
+
+          if (status >= 500) {
+            continue;
+          }
+
+          if ((status === 429 || bodyStatus === "RESOURCE_EXHAUSTED") && hasGroqKey()) {
+            try {
+              const groqText = await analyzeImageWithGroq({
+                image: base64,
+                mode,
+                language,
+                signal,
+              });
+              if (groqText) {
+                resultCache.set(cacheKey, { value: groqText, cachedAt: Date.now() });
+                return groqText;
+              }
+            } catch (groqErr) {
+              if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
+                throw groqErr;
+              }
+              console.warn(
+                "Groq fallback failed:",
+                groqErr.response?.status,
+                groqErr.response?.data || groqErr.message
+              );
+            }
+          }
+
           throw httpError(status, language);
         }
 
-        if (status === 404) {
-          if (cachedModel === candidate) {
-            cachedModel = null;
-            cachedModelAt = 0;
-          }
-          continue;
-        }
-
-        if (status >= 500) {
-          continue;
-        }
-
-        if ((status === 429 || bodyStatus === "RESOURCE_EXHAUSTED") && hasGroqKey()) {
-          try {
-            const groqText = await analyzeImageWithGroq({
-              image: base64,
-              mode,
-              language,
-              signal,
-            });
-            if (groqText) {
-              resultCache.set(cacheKey, groqText);
-              return groqText;
-            }
-          } catch (groqErr) {
-            if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
-              throw groqErr;
-            }
-            console.warn(
-              "Groq fallback failed:",
-              groqErr.response?.status,
-              groqErr.response?.data || groqErr.message
-            );
-          }
-        }
-
-        throw httpError(status, language);
+        throw err;
       }
-
-      throw err;
     }
-  }
 
-  throw httpError(lastStatus, language);
+    throw httpError(lastStatus, language);
+  })();
+
+  inFlightRequests.set(cacheKey, requestPromise);
+
+  try {
+    return await requestPromise;
+  } finally {
+    inFlightRequests.delete(cacheKey);
+  }
 }
 
 export function clearGeminiResultCache() {
   resultCache.clear();
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
