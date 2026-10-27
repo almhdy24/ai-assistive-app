@@ -4,6 +4,8 @@ import { analyzeImageWithGroq, hasGroqKey } from "./groq";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
+const REQUEST_TIMEOUT_MS = 25000;
+const RETRY_DELAY_MS = 1000;
 
 // Tried in order — all support vision + generateContent
 const PREFERRED_MODELS = [
@@ -17,44 +19,53 @@ const PREFERRED_MODELS = [
 ];
 
 let cachedModel = null;
+const debugEnabled = import.meta.env.DEV;
+
+function trace(label, startedAt, extra = {}) {
+  if (!debugEnabled) return;
+  console.info("[gemini-latency]", label, `${Date.now() - startedAt}ms`, extra);
+}
 
 /* ------------------------------------------------------------------ */
 /* Model discovery                                                     */
 /* ------------------------------------------------------------------ */
 
 async function discoverModel(signal) {
+  const startedAt = Date.now();
+
   try {
     const { data } = await axios.get(`${BASE}/models`, {
       params: { key: API_KEY },
       signal,
-      timeout: 8000,
+      timeout: REQUEST_TIMEOUT_MS,
     });
 
     const models = data?.models ?? [];
 
-    // Only consider models that explicitly support generateContent
-    // AND look like vision-capable models (flash / pro / vision keywords)
     const VISION_RE = /flash|pro|vision|gemini/i;
     const supportsVision = (m) =>
       m.supportedGenerationMethods?.includes("generateContent") &&
       VISION_RE.test(m.name);
 
-    // Prefer models in our ranked list first
     for (const id of PREFERRED_MODELS) {
       if (models.find((m) => m.name === `models/${id}` && supportsVision(m))) {
+        trace("discoverModel", startedAt, { selected: id });
         return id;
       }
     }
 
-    // Any vision-capable model from the API as last resort
     const fallback = models.find(supportsVision);
-    if (fallback) return fallback.name.replace("models/", "");
+    if (fallback) {
+      const name = fallback.name.replace("models/", "");
+      trace("discoverModel", startedAt, { selected: name });
+      return name;
+    }
   } catch (err) {
     if (axios.isCancel(err) || err.name === "CanceledError") throw err;
-    // Discovery failed — fall through to direct probe below
+    trace("discoverModel:error", startedAt, { message: err.message });
   }
 
-  return null; // signal: no discovery result, probe directly
+  return null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -62,6 +73,8 @@ async function discoverModel(signal) {
 /* ------------------------------------------------------------------ */
 
 async function callModel(model, base64, prompt, signal) {
+  const startedAt = Date.now();
+
   const { data } = await axios.post(
     `${BASE}/models/${model}:generateContent`,
     {
@@ -79,8 +92,14 @@ async function callModel(model, base64, prompt, signal) {
         candidateCount: 1,
       },
     },
-    { params: { key: API_KEY }, signal }
+    {
+      params: { key: API_KEY },
+      signal,
+      timeout: REQUEST_TIMEOUT_MS,
+    }
   );
+
+  trace("callModel", startedAt, { model });
 
   return (
     data?.candidates?.[0]?.content?.parts
@@ -95,11 +114,12 @@ async function callModelWithRetry(model, base64, prompt, signal) {
     return await callModel(model, base64, prompt, signal);
   } catch (err) {
     if (axios.isCancel(err) || err.name === "CanceledError") throw err;
-    // One retry for transient server errors (500/502/503/504)
+
     if (err.response?.status >= 500) {
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
       return callModel(model, base64, prompt, signal);
     }
+
     throw err;
   }
 }
@@ -131,6 +151,7 @@ function httpError(status, language) {
       code: "SERVER_BUSY",
     },
   };
+
   const entry = map[status];
   const e = new Error(
     entry
@@ -154,6 +175,8 @@ export async function analyzeImage({
   language = "en",
   signal,
 }) {
+  const startedAt = Date.now();
+
   if (!API_KEY) {
     const e = new Error(
       language === "ar"
@@ -175,25 +198,29 @@ export async function analyzeImage({
   const base64 = image.includes(",") ? image.split(",")[1] : image;
   const prompt = getVisionPrompt(mode, language);
 
-  // Build a queue: discovered model first, then full preferred list as fallback.
-  // This means even if discovery fails entirely, every known model is tried.
-  const discovered = cachedModel ?? (await discoverModel(signal));
-  const queue = discovered
-    ? [discovered, ...PREFERRED_MODELS.filter((m) => m !== discovered)]
+  trace("prep-image", startedAt, { size: base64.length });
+
+  let model = cachedModel;
+  if (!model) {
+    model = await discoverModel(signal);
+  }
+
+  const queue = model
+    ? [model, ...PREFERRED_MODELS.filter((m) => m !== model)]
     : [...PREFERRED_MODELS];
 
   let lastStatus = 404;
 
-  for (const model of queue) {
+  for (const candidate of queue) {
     try {
-      const text = await callModelWithRetry(model, base64, prompt, signal);
+      const text = await callModelWithRetry(candidate, base64, prompt, signal);
 
       if (text) {
-        cachedModel = model; // remember what worked for next call
+        cachedModel = candidate;
+        trace("analyzeImage:success", startedAt, { model: candidate });
         return text;
       }
 
-      // Empty response — model responded but gave nothing useful
       throw new Error(
         language === "ar"
           ? "لم يُرجع الموديل أي نتيجة."
@@ -208,28 +235,24 @@ export async function analyzeImage({
         lastStatus = status;
 
         if (status === 404) {
-          // Model doesn't exist — wipe cache and try the next one
-          if (cachedModel === model) cachedModel = null;
+          if (cachedModel === candidate) cachedModel = null;
           continue;
         }
 
         if (status >= 500) {
-          // Transient server error — try next model after retry already failed
           continue;
         }
 
-        // Gemini quota/rate-limit → fall back to Groq Vision if configured
-        if (
-          (status === 429 || bodyStatus === "RESOURCE_EXHAUSTED") &&
-          hasGroqKey()
-        ) {
+        if ((status === 429 || bodyStatus === "RESOURCE_EXHAUSTED") && hasGroqKey()) {
           try {
+            const groqStartedAt = Date.now();
             const groqText = await analyzeImageWithGroq({
               image: base64,
               mode,
               language,
               signal,
             });
+            trace("groqFallback", groqStartedAt, { status });
             if (groqText) return groqText;
           } catch (groqErr) {
             if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
@@ -240,19 +263,227 @@ export async function analyzeImage({
               groqErr.response?.status,
               groqErr.response?.data || groqErr.message
             );
-            // Groq also failed — surface the original Gemini error
           }
         }
 
-        // 401, 403, 429, other 4xx — stop immediately
         throw httpError(status, language);
       }
 
-      // Network / timeout — propagate
       throw err;
     }
   }
 
-  // Every model in the queue returned 404
+  trace("analyzeImage:failed", startedAt, { lastStatus });
   throw httpError(lastStatus, language);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

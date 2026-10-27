@@ -50,8 +50,10 @@ export async function analyzeImageWithGroq({
         "Content-Type": "application/json",
       },
       signal,
+      timeout: 25000,
     }
   );
 
   return data?.choices?.[0]?.message?.content?.trim() || null;
 }
+
