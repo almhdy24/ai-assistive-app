@@ -4,32 +4,31 @@ import { analyzeImageWithGroq, hasGroqKey } from "./groq";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
+const REQUEST_TIMEOUT_MS = 25000;
 
-// Keep a conservative, production-safe list. Avoid speculative 3.x names.
-// If the API key doesn't support one of these, discovery will skip it.
+// Verified by the live /models endpoint: these names are supported for this key.
 const PREFERRED_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-2.0-flash",
-  "gemini-1.5-flash",
+  "gemini-flash-latest",
+  "gemini-2.5-pro",
+  "gemini-3.6-flash",
+  "gemini-3.7-flash",
+  "gemini-3.5-flash",
+  "gemini-3.8-flash",
 ];
 
 let cachedModel = null;
-
-/* ------------------------------------------------------------------ */
-/* Model discovery                                                     */
-/* ------------------------------------------------------------------ */
 
 async function discoverModel(signal) {
   try {
     const { data } = await axios.get(`${BASE}/models`, {
       params: { key: API_KEY },
       signal,
-      timeout: 8000,
+      timeout: REQUEST_TIMEOUT_MS,
     });
 
     const models = data?.models ?? [];
-
     const VISION_RE = /flash|pro|vision|gemini/i;
     const supportsVision = (m) =>
       m.supportedGenerationMethods?.includes("generateContent") &&
@@ -45,15 +44,10 @@ async function discoverModel(signal) {
     if (fallback) return fallback.name.replace("models/", "");
   } catch (err) {
     if (axios.isCancel(err) || err.name === "CanceledError") throw err;
-    // Discovery failed — fall through to direct probe below
   }
 
   return null;
 }
-
-/* ------------------------------------------------------------------ */
-/* Single request (with one retry for transient 5xx)                  */
-/* ------------------------------------------------------------------ */
 
 async function callModel(model, base64, prompt, signal) {
   const { data } = await axios.post(
@@ -63,7 +57,12 @@ async function callModel(model, base64, prompt, signal) {
         {
           parts: [
             { text: prompt },
-            { inline_data: { mime_type: "image/jpeg", data: base64 } },
+            {
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: base64,
+              },
+            },
           ],
         },
       ],
@@ -73,7 +72,11 @@ async function callModel(model, base64, prompt, signal) {
         candidateCount: 1,
       },
     },
-    { params: { key: API_KEY }, signal }
+    {
+      params: { key: API_KEY },
+      signal,
+      timeout: REQUEST_TIMEOUT_MS,
+    }
   );
 
   return (
@@ -99,12 +102,13 @@ async function callModelWithRetry(model, base64, prompt, signal) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Error mapping                                                       */
-/* ------------------------------------------------------------------ */
-
 function httpError(status, language) {
   const map = {
+    400: {
+      ar: "طلب غير صالح. تحقق من الصورة والموديل وإعدادات الطلب.",
+      en: "Invalid request. Check the image, model, and request payload.",
+      code: "INVALID_REQUEST",
+    },
     401: {
       ar: "مفتاح API غير صالح. تحقق من ملف .env.local.",
       en: "Invalid API key. Check your .env.local file.",
@@ -119,11 +123,6 @@ function httpError(status, language) {
       ar: "تجاوزت حد الطلبات. انتظر لحظة ثم حاول مرة أخرى.",
       en: "Too many requests. Wait a moment and try again.",
       code: "RATE_LIMITED",
-    },
-    400: {
-      ar: "طلب غير صالح. تحقق من الصورة والموديل والمحاولات السابقة.",
-      en: "Invalid request. Check the image, selected model, and request details.",
-      code: "INVALID_REQUEST",
     },
     503: {
       ar: "الخادم مشغول مؤقتاً. حاول مرة أخرى.",
@@ -145,10 +144,6 @@ function httpError(status, language) {
   return e;
 }
 
-/* ------------------------------------------------------------------ */
-/* Public API                                                          */
-/* ------------------------------------------------------------------ */
-
 export async function analyzeImage({
   image,
   mode = "general",
@@ -166,7 +161,6 @@ export async function analyzeImage({
   }
 
   if (!image) throw new Error("No image provided.");
-
   if (!navigator.onLine) {
     const e = new Error("NETWORK_REQUIRED");
     e.code = "NETWORK_REQUIRED";
@@ -176,19 +170,21 @@ export async function analyzeImage({
   const base64 = image.includes(",") ? image.split(",")[1] : image;
   const prompt = getVisionPrompt(mode, language);
 
-  const discovered = cachedModel ?? (await discoverModel(signal));
-  const queue = discovered
-    ? [discovered, ...PREFERRED_MODELS.filter((m) => m !== discovered)]
-    : [...PREFERRED_MODELS];
+  let model = cachedModel ?? (await discoverModel(signal));
+  if (!model) {
+    const fallback = "gemini-2.5-flash";
+    model = fallback;
+  }
+
+  const queue = [model, ...PREFERRED_MODELS.filter((m) => m !== model)];
 
   let lastStatus = 404;
 
-  for (const model of queue) {
+  for (const candidate of queue) {
     try {
-      const text = await callModelWithRetry(model, base64, prompt, signal);
-
+      const text = await callModelWithRetry(candidate, base64, prompt, signal);
       if (text) {
-        cachedModel = model;
+        cachedModel = candidate;
         return text;
       }
 
@@ -208,14 +204,15 @@ export async function analyzeImage({
         if (status === 400) {
           console.error("Gemini rejected the request:", {
             status,
-            model,
+            model: candidate,
             error: err.response?.data,
+            payloadSize: base64.length,
           });
           throw httpError(status, language);
         }
 
         if (status === 404) {
-          if (cachedModel === model) cachedModel = null;
+          if (cachedModel === candidate) cachedModel = null;
           continue;
         }
 
