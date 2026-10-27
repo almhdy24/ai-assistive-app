@@ -5,8 +5,8 @@ import { analyzeImageWithGroq, hasGroqKey } from "./groq";
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 const REQUEST_TIMEOUT_MS = 25000;
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
 
-// Verified by the live /models endpoint: these names are supported for this key.
 const PREFERRED_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
@@ -19,6 +19,18 @@ const PREFERRED_MODELS = [
 ];
 
 let cachedModel = null;
+let cachedModelAt = 0;
+const resultCache = new Map();
+
+function debugGemini(label, details) {
+  if (import.meta.env.DEV) {
+    console.info(`[gemini-debug] ${label}`, details);
+  }
+}
+
+function getModelCacheKey(image, mode, language) {
+  return `${mode}:${language}:${image.slice(-256)}`;
+}
 
 async function discoverModel(signal) {
   try {
@@ -49,7 +61,26 @@ async function discoverModel(signal) {
   return null;
 }
 
+async function getPreferredModel(signal) {
+  const now = Date.now();
+
+  if (cachedModel && now - cachedModelAt < MODEL_CACHE_TTL_MS) {
+    return cachedModel;
+  }
+
+  const discovered = await discoverModel(signal);
+  cachedModel = discovered || "gemini-2.5-flash";
+  cachedModelAt = now;
+  return cachedModel;
+}
+
 async function callModel(model, base64, prompt, signal) {
+  debugGemini("generateContent request", {
+    model,
+    payloadSize: base64.length,
+    promptLength: prompt.length,
+  });
+
   const { data } = await axios.post(
     `${BASE}/models/${model}:generateContent`,
     {
@@ -169,22 +200,24 @@ export async function analyzeImage({
 
   const base64 = image.includes(",") ? image.split(",")[1] : image;
   const prompt = getVisionPrompt(mode, language);
+  const cacheKey = getModelCacheKey(base64, mode, language);
 
-  let model = cachedModel ?? (await discoverModel(signal));
-  if (!model) {
-    const fallback = "gemini-2.5-flash";
-    model = fallback;
+  if (resultCache.has(cacheKey)) {
+    return resultCache.get(cacheKey);
   }
 
+  const model = await getPreferredModel(signal);
   const queue = [model, ...PREFERRED_MODELS.filter((m) => m !== model)];
-
   let lastStatus = 404;
 
   for (const candidate of queue) {
     try {
       const text = await callModelWithRetry(candidate, base64, prompt, signal);
+
       if (text) {
+        resultCache.set(cacheKey, text);
         cachedModel = candidate;
+        cachedModelAt = Date.now();
         return text;
       }
 
@@ -201,6 +234,12 @@ export async function analyzeImage({
         const bodyStatus = err.response.data?.error?.status;
         lastStatus = status;
 
+        debugGemini("provider error", {
+          status,
+          model: candidate,
+          error: err.response?.data,
+        });
+
         if (status === 400) {
           console.error("Gemini rejected the request:", {
             status,
@@ -212,7 +251,10 @@ export async function analyzeImage({
         }
 
         if (status === 404) {
-          if (cachedModel === candidate) cachedModel = null;
+          if (cachedModel === candidate) {
+            cachedModel = null;
+            cachedModelAt = 0;
+          }
           continue;
         }
 
@@ -228,7 +270,10 @@ export async function analyzeImage({
               language,
               signal,
             });
-            if (groqText) return groqText;
+            if (groqText) {
+              resultCache.set(cacheKey, groqText);
+              return groqText;
+            }
           } catch (groqErr) {
             if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
               throw groqErr;
@@ -250,3 +295,209 @@ export async function analyzeImage({
 
   throw httpError(lastStatus, language);
 }
+
+export function clearGeminiResultCache() {
+  resultCache.clear();
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
