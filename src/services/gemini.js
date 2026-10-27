@@ -4,40 +4,28 @@ import { analyzeImageWithGroq, hasGroqKey } from "./groq";
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
-const REQUEST_TIMEOUT_MS = 25000;
-const RETRY_DELAY_MS = 1000;
 
-// Tried in order — all support vision + generateContent
+// Keep a conservative, production-safe list. Avoid speculative 3.x names.
+// If the API key doesn't support one of these, discovery will skip it.
 const PREFERRED_MODELS = [
-  "gemini-3.6-flash",
-  "gemini-3.7-flash",
-  "gemini-3.5-flash",
-  "gemini-flash-latest",
-  "gemini-2.5-flash-lite",
-  "gemini-3.8-flash",
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
 ];
 
 let cachedModel = null;
-const debugEnabled = import.meta.env.DEV;
-
-function trace(label, startedAt, extra = {}) {
-  if (!debugEnabled) return;
-  console.info("[gemini-latency]", label, `${Date.now() - startedAt}ms`, extra);
-}
 
 /* ------------------------------------------------------------------ */
 /* Model discovery                                                     */
 /* ------------------------------------------------------------------ */
 
 async function discoverModel(signal) {
-  const startedAt = Date.now();
-
   try {
     const { data } = await axios.get(`${BASE}/models`, {
       params: { key: API_KEY },
       signal,
-      timeout: REQUEST_TIMEOUT_MS,
+      timeout: 8000,
     });
 
     const models = data?.models ?? [];
@@ -49,20 +37,15 @@ async function discoverModel(signal) {
 
     for (const id of PREFERRED_MODELS) {
       if (models.find((m) => m.name === `models/${id}` && supportsVision(m))) {
-        trace("discoverModel", startedAt, { selected: id });
         return id;
       }
     }
 
     const fallback = models.find(supportsVision);
-    if (fallback) {
-      const name = fallback.name.replace("models/", "");
-      trace("discoverModel", startedAt, { selected: name });
-      return name;
-    }
+    if (fallback) return fallback.name.replace("models/", "");
   } catch (err) {
     if (axios.isCancel(err) || err.name === "CanceledError") throw err;
-    trace("discoverModel:error", startedAt, { message: err.message });
+    // Discovery failed — fall through to direct probe below
   }
 
   return null;
@@ -73,8 +56,6 @@ async function discoverModel(signal) {
 /* ------------------------------------------------------------------ */
 
 async function callModel(model, base64, prompt, signal) {
-  const startedAt = Date.now();
-
   const { data } = await axios.post(
     `${BASE}/models/${model}:generateContent`,
     {
@@ -92,14 +73,8 @@ async function callModel(model, base64, prompt, signal) {
         candidateCount: 1,
       },
     },
-    {
-      params: { key: API_KEY },
-      signal,
-      timeout: REQUEST_TIMEOUT_MS,
-    }
+    { params: { key: API_KEY }, signal }
   );
-
-  trace("callModel", startedAt, { model });
 
   return (
     data?.candidates?.[0]?.content?.parts
@@ -116,7 +91,7 @@ async function callModelWithRetry(model, base64, prompt, signal) {
     if (axios.isCancel(err) || err.name === "CanceledError") throw err;
 
     if (err.response?.status >= 500) {
-      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      await new Promise((r) => setTimeout(r, 1500));
       return callModel(model, base64, prompt, signal);
     }
 
@@ -144,6 +119,11 @@ function httpError(status, language) {
       ar: "تجاوزت حد الطلبات. انتظر لحظة ثم حاول مرة أخرى.",
       en: "Too many requests. Wait a moment and try again.",
       code: "RATE_LIMITED",
+    },
+    400: {
+      ar: "طلب غير صالح. تحقق من الصورة والموديل والمحاولات السابقة.",
+      en: "Invalid request. Check the image, selected model, and request details.",
+      code: "INVALID_REQUEST",
     },
     503: {
       ar: "الخادم مشغول مؤقتاً. حاول مرة أخرى.",
@@ -175,8 +155,6 @@ export async function analyzeImage({
   language = "en",
   signal,
 }) {
-  const startedAt = Date.now();
-
   if (!API_KEY) {
     const e = new Error(
       language === "ar"
@@ -198,26 +176,19 @@ export async function analyzeImage({
   const base64 = image.includes(",") ? image.split(",")[1] : image;
   const prompt = getVisionPrompt(mode, language);
 
-  trace("prep-image", startedAt, { size: base64.length });
-
-  let model = cachedModel;
-  if (!model) {
-    model = await discoverModel(signal);
-  }
-
-  const queue = model
-    ? [model, ...PREFERRED_MODELS.filter((m) => m !== model)]
+  const discovered = cachedModel ?? (await discoverModel(signal));
+  const queue = discovered
+    ? [discovered, ...PREFERRED_MODELS.filter((m) => m !== discovered)]
     : [...PREFERRED_MODELS];
 
   let lastStatus = 404;
 
-  for (const candidate of queue) {
+  for (const model of queue) {
     try {
-      const text = await callModelWithRetry(candidate, base64, prompt, signal);
+      const text = await callModelWithRetry(model, base64, prompt, signal);
 
       if (text) {
-        cachedModel = candidate;
-        trace("analyzeImage:success", startedAt, { model: candidate });
+        cachedModel = model;
         return text;
       }
 
@@ -234,8 +205,17 @@ export async function analyzeImage({
         const bodyStatus = err.response.data?.error?.status;
         lastStatus = status;
 
+        if (status === 400) {
+          console.error("Gemini rejected the request:", {
+            status,
+            model,
+            error: err.response?.data,
+          });
+          throw httpError(status, language);
+        }
+
         if (status === 404) {
-          if (cachedModel === candidate) cachedModel = null;
+          if (cachedModel === model) cachedModel = null;
           continue;
         }
 
@@ -245,14 +225,12 @@ export async function analyzeImage({
 
         if ((status === 429 || bodyStatus === "RESOURCE_EXHAUSTED") && hasGroqKey()) {
           try {
-            const groqStartedAt = Date.now();
             const groqText = await analyzeImageWithGroq({
               image: base64,
               mode,
               language,
               signal,
             });
-            trace("groqFallback", groqStartedAt, { status });
             if (groqText) return groqText;
           } catch (groqErr) {
             if (axios.isCancel(groqErr) || groqErr.name === "CanceledError") {
@@ -273,217 +251,5 @@ export async function analyzeImage({
     }
   }
 
-  trace("analyzeImage:failed", startedAt, { lastStatus });
   throw httpError(lastStatus, language);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
